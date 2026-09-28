@@ -589,6 +589,43 @@ a different version can rewrite `Manifest.lock` and re-trigger the error.
 
 ---
 
+## [script-path-missing] Run-script phase: command not found
+
+**Symptom** — builds from Terminal but fails in Xcode.app (or on an Apple
+Silicon machine / a CI runner, but not on an Intel Mac):
+
+```
+/…/Script-8F3A1C.sh: line 3: swiftlint: command not found
+Command PhaseScriptExecution failed with a nonzero exit code
+```
+
+**Cause** — run-script phases do not source `~/.zshrc` or `~/.zprofile`.
+Xcode.app is started by launchd and gives scripts a fixed `PATH`:
+`$(DEVELOPER_DIR)/usr/bin`, `/usr/local/bin` and the system dirs. Homebrew on
+Apple Silicon installs to `/opt/homebrew/bin`, and mise/asdf/rbenv shims live
+under `~`, so neither is on that `PATH`. `xcodebuild` run from a shell inherits
+that shell's `PATH`, which is why the same build passes on the command line.
+`PhaseScriptExecution failed` is only the wrapper; the real error is the line
+above it.
+
+**Fix** — make the script find the tool itself, and fail loudly when it can't:
+
+```bash
+export PATH="/opt/homebrew/bin:$HOME/.local/share/mise/shims:$PATH"
+if ! command -v swiftlint >/dev/null; then
+  echo "error: swiftlint not installed (brew install swiftlint)"; exit 1
+fi
+swiftlint
+```
+
+Better still, drop the global tool: run it as an SPM build-tool plugin or call a
+version-pinned binary in the repo (`mise exec -- swiftlint`, `Pods/SwiftLint/swiftlint`).
+Do not symlink into `/usr/local/bin` to hide it — the next machine breaks again.
+
+**Rule:** a build phase sees launchd's `PATH`, not your shell's — set `PATH` inside the script or call the tool by a pinned path.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
