@@ -454,6 +454,36 @@ xcrun simctl delete unavailable
 
 ---
 
+## [multiple-commands-produce] Multiple commands produce the same output
+
+**Symptom**
+
+```
+error: Multiple commands produce '…/App.app/Info.plist'
+    note: Target 'App' (project 'App') has copy command from '…/App/Info.plist'
+    note: Target 'App' (project 'App') has process command with output '…/App.app/Info.plist'
+```
+
+**Cause** — two build steps write one file in the product. The new build
+system (default since Xcode 10, the only one since Xcode 14) refuses this;
+the legacy one silently let the last writer win. Usual culprits:
+
+- `Info.plist` (or an `.entitlements` file) listed in *Copy Bundle Resources*
+  while also processed via `INFOPLIST_FILE`.
+- Two resources with the same file name in different folders — groups are
+  flattened into the bundle root, so `A/Config.json` and `B/Config.json` collide.
+- A framework embedded twice: by an *Embed Frameworks* phase and by CocoaPods'
+  `[CP] Embed Pods Frameworks` script, or by two targets into one app.
+
+**Fix** — the `note:` lines name both producers; remove one. Drop the plist
+from Copy Bundle Resources, rename or use a folder reference for clashing
+resources, embed each framework in exactly one place. `-UseModernBuildSystem=NO`
+no longer exists, so there is no flag to hide it.
+
+**Rule:** read the two `note:` lines — each names a producer, and the fix is always deleting one of them, never a build setting.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
