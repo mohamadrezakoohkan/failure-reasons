@@ -626,6 +626,43 @@ Do not symlink into `/usr/local/bin` to hide it — the next machine breaks agai
 
 ---
 
+## [dyld-rpath-missing] Builds fine, crashes at launch: Library not loaded
+
+**Symptom** — `BUILD SUCCEEDED`, then the app or `xcodebuild test` dies before
+any code runs:
+
+```
+dyld[4121]: Library not loaded: @rpath/Analytics.framework/Analytics
+  Referenced from: <…> /…/App.app/App
+  Reason: tried: '/…/App.app/Frameworks/Analytics.framework/Analytics' (no such file), …
+The test runner exited with code -1 before finishing running tests.
+```
+
+**Cause** — linking and embedding are separate steps. The linker only records
+"load `@rpath/X` at runtime"; it never checks the framework will be there. It
+is missing when the dynamic framework is set to *Do Not Embed*, when a new
+target (extension, test bundle, CLI tool) links it without its own copy phase,
+or when `LD_RUNPATH_SEARCH_PATHS` lacks the directory it lives in. A SwiftPM
+product switched to `type: .dynamic`, or a Tuist/XcodeGen change from static
+to dynamic linking, causes the same crash with no source change.
+
+**Fix** — see what the binary asks for, then compare with what the bundle holds:
+
+```bash
+otool -L App.app/App | grep @rpath             # what it needs
+otool -l App.app/App | grep -A2 LC_RPATH        # where it looks
+ls App.app/Frameworks                           # what was shipped
+```
+
+Set the framework to *Embed & Sign* in the app target only. Give runpath
+`@executable_path/Frameworks` for apps and `@loader_path/Frameworks` for
+frameworks and hostless test bundles. Extensions should load from the host app
+(`@executable_path/../../Frameworks`), not carry their own copy.
+
+**Rule:** a green link proves nothing about runtime — every `@rpath` dependency must be embedded once and reachable from an `LC_RPATH` entry.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
