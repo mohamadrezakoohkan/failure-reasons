@@ -852,6 +852,45 @@ instead → [undefined-symbols].
 
 ---
 
+## [non-modular-header] Could not build module: non-modular header include
+
+**Symptom** — an Objective-C (or mixed) framework builds on its own, then any
+`import` of it from Swift or `@import` from Objective-C fails:
+
+```
+error: include of non-modular header inside framework module 'Foo':
+       '/…/Vendor/Bar.h' [-Werror,-Wnon-modular-include-in-framework-module]
+error: could not build Objective-C module 'Foo'
+```
+
+Often starts after turning on `DEFINES_MODULE`, adding a Swift file to an
+Objective-C target, or moving a pod to a static framework.
+
+**Cause** — a framework module is only what its module map lists (usually the
+umbrella header). Clang requires every header reached from it to belong to a
+module too. A public header that does `#import "Bar.h"` from a plain header
+search path, a non-modular library, or the app's own sources pulls in text no
+module owns, and Clang refuses to build the module. The `In file included
+from` lines above the error show the chain.
+
+**Fix** — keep the module's public surface self-contained:
+
+- Move the `#import` from the public `.h` into the `.m`; in the header, use
+  `@class Bar;` / `@protocol Bar;` forward declarations.
+- If the type must stay public, make the dependency a module: give it a
+  `module.modulemap`, or with CocoaPods use `use_modular_headers!` (or
+  `:modular_headers => true` on that pod).
+- Headers only used inside the framework go in the *Project* header role, not
+  *Public*, and never in the umbrella header.
+
+`CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES = YES` turns the error
+into a warning for Objective-C builds only. The Swift importer still fails, and
+the module stays fragile.
+
+**Rule:** a framework's public headers may import only other modules — anything else goes in the `.m` or behind a forward declaration.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
