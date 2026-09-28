@@ -763,6 +763,48 @@ framework, and everyone else links that framework (or make the library dynamic).
 
 ---
 
+## [type-check-timeout] Compiler gives up: unable to type-check this expression
+
+**Symptom** — one Swift file never finishes compiling. It fails with no real
+type error, or SwiftUI points at a whole `body`:
+
+```
+error: the compiler is unable to type-check this expression in reasonable time;
+       try breaking up the expression into distinct sub-expressions
+error: failed to produce diagnostic for expression; please submit a bug report
+```
+
+It can pass on a fast laptop and fail on a slower CI runner, or start after a
+Swift upgrade with no source change.
+
+**Cause** — Swift infers types by trying every combination of overloads.
+Operators (`+`, `*`, `??`, `==`) have dozens of overloads, and untyped literals
+(`0`, `1.5`, `"a"`) can be any `ExpressibleBy…` type. Closures with no
+annotations and mixed `CGFloat`/`Double` math (implicitly converted since
+Swift 5.5) add more. The number of combinations grows exponentially, and the
+solver stops when it hits its time or memory limit. Long SwiftUI `body`s with
+ternaries, `if`s and modifier chains are one big expression, so they hit this
+often and the error lands on the whole view.
+
+**Fix** — find the slow expressions, then give the solver fewer choices:
+
+```bash
+# OTHER_SWIFT_FLAGS, Debug only — warns with the time spent (ms)
+-Xfrontend -warn-long-expression-type-checking=100
+-Xfrontend -warn-long-function-bodies=200
+```
+
+Split the expression into `let`s with explicit types. Type the literals
+(`let spacing: CGFloat = 8`). Annotate closure parameters and return types.
+Use string interpolation instead of `+` chains, and keep one numeric type per
+expression. In SwiftUI, move branches into small subviews or `@ViewBuilder`
+properties. Keep the warning flags on, so new hot spots show up before CI hits
+the limit.
+
+**Rule:** a timeout here is a code smell, not a flaky build — make the expression cheap to infer rather than retrying on a faster machine.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
