@@ -712,6 +712,57 @@ another target pulling it in.
 
 ---
 
+## [duplicate-symbols] Linker fails: duplicate symbol, or two copies at runtime
+
+**Symptom** — the link step finds the same symbol twice:
+
+```
+duplicate symbol '_OBJC_CLASS_$_Reachability' in:
+    /…/libAnalytics.a[3](Reachability.o)
+    /…/libNetworking.a[7](Reachability.o)
+ld: 1 duplicate symbols
+clang: error: linker command failed with exit code 1
+```
+
+Or the build succeeds and the console warns at launch:
+
+```
+objc[812]: Class _TtC4Core6Logger is implemented in both …/Core.framework/Core
+and …/App.app/App. One of the two will be used. Which one is undefined.
+```
+
+**Cause** — two object files define the same global, and the linker is told
+to load both. Usual sources:
+
+- Two vendored static libraries each embed the same third-party code
+  (Reachability, protobuf, a crash reporter). This usually goes unnoticed until
+  `-ObjC` or `-all_load` in `OTHER_LDFLAGS` forces every archive member in.
+- A source file is in *Compile Sources* twice, or is compiled in the app
+  *and* also shipped inside a linked static library.
+- A C/ObjC global is *defined* in a header (`NSString *kKey = @"…";`), so every
+  file that includes it defines it again.
+- The runtime variant: one static library is linked into both the app and a
+  dynamic framework the app embeds. Each binary links cleanly, so the error
+  only appears when both load into one process. Singletons, `+load` and
+  type casts then quietly act on the wrong copy.
+
+**Fix** — see which archives define it, then remove one definition:
+
+```bash
+grep -B1 -A3 "duplicate symbol" build.log
+nm -gU libAnalytics.a libNetworking.a | grep Reachability
+```
+
+Drop the duplicate vendored copy, or ask for a build without it. Swap
+`-all_load` for `-force_load path/to/libOne.a`. Headers hold only
+`extern` declarations, with the definition in one `.m`/`.c` file. A static
+library shared by the app and its frameworks goes into exactly one dynamic
+framework, and everyone else links that framework (or make the library dynamic).
+
+**Rule:** each symbol gets one definition per process — link any static library into exactly one binary, and never paper over it with `-all_load`.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
