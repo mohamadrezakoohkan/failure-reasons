@@ -280,6 +280,39 @@ surfaces only as a resolution timeout.
 
 ---
 
+## [macro-plugin-trust] Macro / plugin must be enabled before it can be used
+
+**Symptom** — builds in Xcode.app, fails on CI or a fresh clone:
+
+```
+error: Macro "CasePathsMacros" from package "swift-case-paths" must be enabled before it can be used
+error: Plugin "SwiftLintBuildToolPlugin" from package "SwiftLint" must be enabled before it can be used
+```
+
+**Cause** — since Xcode 15, SwiftPM macros and build-tool plugins run only after
+a user clicks "Trust & Enable" in the IDE. That approval is stored per machine
+(`~/Library/org.swift.swiftpm/security/macros.json`, `plugins.json`), keyed by
+package fingerprint — so it never exists on a CI runner, and it is invalidated
+whenever the package version changes.
+
+**Fix** — skip the trust prompt for that invocation:
+
+```bash
+xcodebuild ... -skipMacroValidation -skipPackagePluginValidation
+```
+
+The flags apply only to the `xcodebuild` they are passed to — fastlane `gym`,
+`scan`, and `-resolvePackageDependencies` steps each need them too. The
+machine-wide equivalent is
+`defaults write com.apple.dt.Xcode IDESkipMacroFingerprintValidation -bool YES`.
+Where executing unreviewed macro code on CI is a concern, commit the trusted
+fingerprints and copy them into `~/Library/org.swift.swiftpm/security/` before
+building instead of skipping validation.
+
+**Rule:** "must be enabled" is a missing per-machine trust record, not a build error — pass the skip flags on *every* xcodebuild call, or ship the fingerprints.
+
+---
+
 ## [script-sandbox] Sandbox: deny file-write-create in a build phase
 
 **Symptom**
