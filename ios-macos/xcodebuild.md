@@ -663,6 +663,55 @@ frameworks and hostless test bundles. Extensions should load from the host app
 
 ---
 
+## [undefined-symbols] Compiles, then the linker fails: Undefined symbols
+
+**Symptom** — every file compiles and the build dies at the link step:
+
+```
+Undefined symbols for architecture arm64:
+  "_OBJC_CLASS_$_SKStoreProductViewController", referenced from:
+       in RateAppView.o
+  "_$s10Networking9APIClientC5fetch10Foundation4DataVyYaKF", referenced from:
+       in FeedLoader.o
+ld: symbol(s) not found for architecture arm64
+clang: error: linker command failed with exit code 1
+```
+
+**Cause** — the compiler only needs a declaration; the linker needs the code.
+`import Foo` succeeds whenever `Foo.swiftmodule` or its headers sit in the
+shared build folder, even when the target never links `Foo`. That is why it
+works in one scheme and breaks in another. Usual reasons nothing defines the
+symbol:
+
+- The file that defines it is not in the target's *Compile Sources* (wrong
+  target membership, or a Tuist/XcodeGen glob that skips it).
+- The library, framework or SPM product is linked into a sibling target but not
+  this one.
+- A system library is not linked: `std::__1`/`___cxa_*` → `libc++.tbd`,
+  `_sqlite3_*` → `libsqlite3.tbd`, `_OBJC_CLASS_$_SK…` → `StoreKit`. This shows
+  up when autolinking is off, or the reference comes from a prebuilt static
+  library.
+- A test target uses `internal` API, but the app was built with
+  `ENABLE_TESTABILITY = NO` (running tests against Release).
+- A prebuilt `.xcframework` is older than the source: a signature changed, so
+  the mangled name no longer matches.
+
+**Fix** — demangle the name, then check who should define it:
+
+```bash
+grep -A4 "Undefined symbols" build.log | xcrun swift-demangle
+nm -gU path/to/libFoo.a | grep APIClient        # does the binary export it?
+```
+
+If nothing exports it, fix target membership or rebuild the stale binary. If
+something does, add that product to *Link Binary With Libraries* (or the
+target's SPM/Tuist dependencies) of the failing target itself. Do not count on
+another target pulling it in.
+
+**Rule:** an `import` that compiles proves visibility, not linkage — every target must declare its own dependencies.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
