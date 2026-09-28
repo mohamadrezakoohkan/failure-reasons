@@ -554,6 +554,41 @@ nothing to switch off.
 
 ---
 
+## [pods-out-of-sync] Sandbox not in sync with Podfile.lock
+
+**Symptom** — fails in the first seconds, after a branch switch or on CI:
+
+```
+error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or
+update your CocoaPods installation.
+error: Unable to load contents of file list:
+'/…/Target Support Files/Pods-App/Pods-App-frameworks-Debug-input-files.xcfilelist'
+```
+
+**Cause** — CocoaPods injects a `[CP] Check Pods Manifest.lock` phase that diffs
+the committed `Podfile.lock` against `Pods/Manifest.lock` (written by the last
+`pod install`). They differ when `Podfile.lock` changed (pull, branch switch)
+but `pod install` was not re-run, or when a CI cache restored a `Pods/`
+directory from another commit. The `.xcfilelist` variant means `Pods/` is
+missing entirely. Building the `.xcodeproj` instead of the `.xcworkspace`
+fails differently — `No such module` — for the same root reason.
+
+**Fix**
+
+```bash
+bundle exec pod install           # the CocoaPods version pinned in Gemfile.lock
+xcodebuild -workspace App.xcworkspace ...
+```
+
+On CI, key the `Pods/` cache on `hashFiles('Podfile.lock')` and run
+`pod install` unconditionally — it is a no-op when the cache is correct.
+Use `bundle exec` so the CocoaPods version matches the one that wrote the lock;
+a different version can rewrite `Manifest.lock` and re-trigger the error.
+
+**Rule:** this is a stale `Pods/` directory, never a code error — `pod install` after every pull that touches `Podfile.lock`, and cache `Pods/` by the lockfile hash.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
