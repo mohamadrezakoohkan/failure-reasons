@@ -516,6 +516,44 @@ since acceptance is tracked per version.
 
 ---
 
+## [dependency-cycle] Cycle inside a target / between targets
+
+**Symptom** — often appears only after adding an app extension, a watch app, or
+a new run-script phase:
+
+```
+error: Cycle inside App; building could produce unreliable results.
+Cycle details:
+→ Target 'App': CodeSign /…/App.app
+○ Target 'App' has process command with output '…/App.app/Info.plist'
+○ That command depends on command in Target 'App': script phase "Crashlytics"
+error: Cycle in dependencies between targets 'App' and 'AppTests'
+```
+
+**Cause** — the new build system orders tasks by their declared inputs and
+outputs, not by where phases sit in the list, and it rejects a loop outright.
+Usual culprits:
+
+- A run-script phase whose *input* is a product file (`$(BUILT_PRODUCTS_DIR)/$(INFOPLIST_PATH)`,
+  the dSYM) sitting *above* a phase that produces it — typical of Crashlytics
+  upload and version-stamping scripts.
+- *Embed App Extensions* / *Embed Watch Content* placed after a run-script
+  phase, so the script both waits on and feeds the embedded product.
+- A *Headers* phase after *Compile Sources* in a framework target.
+- Across targets: a test or extension target listed as a dependency of its own host,
+  or two frameworks that link each other.
+
+**Fix** — read the `Cycle details` path, then reorder phases so the order is:
+dependencies → headers → sources → resources → embed phases → run scripts that read
+the product *last*. Give every run script explicit input/output files. For a
+cross-target cycle, delete the backward edge in *Target Dependencies* or
+*Link Binary With Libraries*. `-UseModernBuildSystem=NO` is gone; there is
+nothing to switch off.
+
+**Rule:** a cycle is a wrong phase order, not a flaky build — move scripts that read the built product to the end of the phase list and declare their inputs and outputs.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
