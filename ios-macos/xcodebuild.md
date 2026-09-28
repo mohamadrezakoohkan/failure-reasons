@@ -484,6 +484,38 @@ no longer exists, so there is no flag to hide it.
 
 ---
 
+## [license-first-launch] Xcode license not accepted / first launch not run
+
+**Symptom** — every command fails before touching the project, exit code `69`:
+
+```
+You have not agreed to the Xcode license agreements. Please run
+'sudo xcodebuild -license' from within a Terminal window to review and agree
+to the Xcode and Apple SDKs license.
+```
+
+It also breaks `git`, `clang` and `make`, since the `/usr/bin` shims route
+through the active Xcode.
+
+**Cause** — a newly installed or *upgraded* Xcode (minor updates included)
+needs its license accepted and its "first launch" packages (MobileDevice, CoreSimulator
+support) installed. Opening Xcode.app does both; a headless CI runner never opens it.
+
+**Fix**
+
+```bash
+sudo xcodebuild -license accept
+sudo xcodebuild -runFirstLaunch
+xcodebuild -checkFirstLaunchStatus && echo ready   # non-zero exit = still pending
+```
+
+With several Xcodes installed, run both for each one (set `DEVELOPER_DIR`),
+since acceptance is tracked per version.
+
+**Rule:** exit 69 before any build output means the Xcode was never initialised — `-license accept` plus `-runFirstLaunch` belong in the image provisioning step, right after every Xcode install.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
