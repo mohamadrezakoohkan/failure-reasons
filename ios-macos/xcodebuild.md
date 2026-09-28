@@ -805,6 +805,53 @@ the limit.
 
 ---
 
+## [test-host-missing] Tests never start: Could not find test host
+
+**Symptom** — `xcodebuild build` passes, but `test` or `build-for-testing`
+fails before any test runs:
+
+```
+error: Could not find test host for AppTests: TEST_HOST evaluates to
+       "…/Debug-iphonesimulator/App.app/App"
+```
+
+Often it starts right after renaming the app, adding a configuration such as
+`Staging`, or running the same tests on macOS.
+
+**Cause** — a hosted unit-test bundle is injected into the app at runtime.
+`TEST_HOST` is a hard-coded path to the app's executable, and `BUNDLE_LOADER`
+(usually `$(TEST_HOST)`) is what the test bundle links against. The path goes
+stale when the app's `PRODUCT_NAME` changes, or differs per configuration
+(`App Staging.app`). It is also wrong on macOS, where the binary lives in
+`App.app/Contents/MacOS/App`. And it can be right but empty: the scheme's Build
+action does not build the app for *Test*, so the host is never produced.
+
+**Fix** — compare what the setting says with what was built:
+
+```bash
+xcodebuild -showBuildSettings -scheme App -configuration Debug \
+  | grep -E ' (TEST_HOST|BUNDLE_LOADER) = '
+ls "$(dirname "<TEST_HOST value>")"
+```
+
+Use the template's platform-neutral form, with the real product name:
+
+```
+TEST_HOST     = $(BUILT_PRODUCTS_DIR)/App.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/App
+BUNDLE_LOADER = $(TEST_HOST)
+```
+
+If the name changes per configuration, set `TEST_HOST` per configuration too.
+In the scheme, tick *Test* for the app target under Build, or set *Host
+Application* on the test target's General tab. Tests that do not need the app
+can drop the host: clear `TEST_HOST` and `BUNDLE_LOADER`, and move the code
+under test into a framework. A wrong `BUNDLE_LOADER` fails at link time
+instead → [undefined-symbols].
+
+**Rule:** `TEST_HOST` is a path, not a reference — when the app's name or platform changes, update it on purpose.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
