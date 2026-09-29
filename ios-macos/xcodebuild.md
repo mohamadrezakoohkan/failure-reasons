@@ -1067,6 +1067,52 @@ github.com/swiftlang/swift.
 
 ---
 
+## [project-unreadable] Unable to read project: damaged or future format
+
+**Symptom** — xcodebuild stops before it builds anything, with one of these:
+
+```
+xcodebuild: error: Unable to read project 'App.xcodeproj'.
+  Reason: The project 'App' is damaged and cannot be opened. Examine the
+  project file for invalid edits or unresolved source control conflicts.
+
+xcodebuild: error: … cannot be opened because it is in a future Xcode
+  project file format (77).
+```
+
+It works on one teammate's Mac and fails on another, or on CI, right after a
+merge or right after someone opened the project in a newer Xcode.
+
+**Cause** — `project.pbxproj` is an old-style plist, and xcodebuild will not
+read it if any part is broken:
+
+- Merge conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) were committed, or
+  a hand-fixed conflict left a missing `;`, `}` or a duplicate object ID.
+- A newer Xcode raised `objectVersion`. Xcode 16 writes `77` when the project
+  uses synchronized folders (`PBXFileSystemSynchronizedRootGroup`), and older
+  Xcode versions refuse to open it.
+- A generator (Tuist, XcodeGen) or a script wrote a bad value, or a
+  `.xcworkspace/contents.xcworkspacedata` has a conflict too.
+
+**Fix** — find the broken line, then either fix it or regenerate the file:
+
+```bash
+grep -nE "^(<<<<<<<|=======|>>>>>>>)" App.xcodeproj/project.pbxproj
+plutil -lint App.xcodeproj/project.pbxproj      # shows where parsing fails
+grep -n "objectVersion" App.xcodeproj/project.pbxproj
+```
+
+For a future format, either use the same Xcode as CI (see
+[wrong-developer-dir]), or go to File Inspector → Project Format in the newer
+Xcode, choose an older format and commit. Synchronized folders need Xcode 16,
+so convert them back to groups first. If the project is generated, do not fix
+it by hand: run `tuist generate` / `xcodegen` again. Add
+`*.pbxproj merge=union` only if you accept that you must check each merge.
+
+**Rule:** `plutil -lint project.pbxproj` must pass before a merge is pushed, and the whole team must build with the same Xcode that sets `objectVersion`.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
