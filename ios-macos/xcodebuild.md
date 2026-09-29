@@ -1161,6 +1161,45 @@ stub, or remove the blocking wait on main.
 
 ---
 
+## [codesign-detritus] resource fork, Finder information, or similar detritus not allowed
+
+**Symptom** — compile and link pass, then the last step, signing, fails:
+
+```
+/…/Build/Products/Debug-iphoneos/App.app: resource fork, Finder information, or similar detritus not allowed
+Command CodeSign failed with a nonzero exit code
+```
+
+It works on CI and on other laptops, but fails on one machine. Often it starts
+after the project moved to `~/Desktop` or `~/Documents`.
+
+**Cause** — `codesign` refuses a bundle if any file in it has a resource fork
+or Finder info stored as an extended attribute (xattr). Common sources:
+
+- The project or DerivedData is in a folder synced by iCloud Drive (Desktop &
+  Documents sync), Dropbox, or Google Drive. The sync tool adds
+  `com.apple.FinderInfo` / `com.apple.fileprovider.*` to files, and they are
+  copied into the `.app`.
+- An image, font or `.xcframework` added from Finder, a zip, or an email keeps
+  its Finder info.
+- On newer macOS, `com.apple.provenance` on build products can trigger it too.
+
+**Fix** — find which file has the attribute, then remove the source of it:
+
+```bash
+xattr -lr build/Products/Debug-iphoneos/App.app | grep -vE "com.apple.quarantine" | head
+xattr -cr path/to/Assets  # clean the source files, not only the build
+rm -rf ~/Library/Developer/Xcode/DerivedData/App-*
+```
+
+If the project is in a synced folder, `xattr -cr` does not last — the sync
+tool adds the attributes again. Move the clone to a folder that is not synced
+(`~/Developer`), and keep `-derivedDataPath` outside synced folders too.
+
+**Rule:** never build from an iCloud/Dropbox-synced folder; on a detritus error run `xattr -lr` on the `.app` to find the file, and clean the source, not only the build.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
