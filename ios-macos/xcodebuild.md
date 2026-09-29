@@ -1243,6 +1243,44 @@ xcrun devicectl device info details --device <UDID> | grep -iE "developerMode|pa
 
 ---
 
+## [actool-runtime-mismatch] Asset catalog fails: No simulator runtime version available
+
+**Symptom** — sources compile, then `CompileAssetCatalog` fails. It happens
+even in a build for a device or an archive:
+
+```
+error: No simulator runtime version from [<DVTBuildVersion 22E238>, <DVTBuildVersion 22F77>] available to use with iphonesimulator SDK version <DVTBuildVersion 23B77>
+** BUILD FAILED **  (CompileAssetCatalog … Assets.xcassets)
+```
+
+It often starts after an Xcode minor update or a new CI runner image, when
+`xcrun simctl list runtimes` still shows iOS runtimes.
+
+**Cause** — `actool` renders asset catalogs with a simulator runtime, and that
+runtime must match the SDK build of the Xcode you are using. The runtimes that
+are installed belong to a different SDK build (an older point release, or a
+beta), so none of them match. This is not [missing-platform-runtime]: runtimes
+are there, just not the right build. A macOS update can also turn off the
+runtime disk images, and then the result is the same.
+
+**Fix**
+
+```bash
+xcrun simctl runtime match list          # SDK build → runtime it uses (or none)
+xcodebuild -downloadPlatform iOS         # get the runtime for THIS Xcode's SDK
+# or point the SDK at a runtime that is already installed:
+xcrun simctl runtime match set iphoneos<version> <runtime-build>
+```
+
+If `simctl runtime list` shows runtimes as *Unusable* after a macOS update,
+restart the Mac (or `sudo killall -9 com.apple.CoreSimulator.CoreSimulatorService`)
+so the runtime images mount again.
+
+**Rule:** when Xcode changes, install its runtime too — a simulator runtime that
+does not match the SDK build breaks asset catalogs, even in device builds.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
