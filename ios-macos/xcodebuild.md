@@ -1405,6 +1405,46 @@ built product is found by the default name. After the change, wipe DerivedData
 
 ---
 
+## [module-cache-mtime] Header modified since the module file was built
+
+**Symptom** — a CI build that passed yesterday fails straight away on clean
+code, often in an SDK header nobody touched:
+
+```
+fatal error: file '/Applications/Xcode.app/…/usr/include/os/object.h' has been modified since the module file '/…/ModuleCache.noindex/…/Darwin-3FJ2K9.pcm' was built: mtime changed
+error: could not build module 'Foundation'
+```
+
+**Cause** — each Clang module file (`.pcm`) records the path and mtime of every
+header it was built from. If a header's mtime changes, Clang rejects the `.pcm`.
+This happens when an old `ModuleCache.noindex` sits on top of new headers:
+
+- CI restores a cached `DerivedData` (or `-derivedDataPath`) after the runner
+  image updated Xcode. The SDK headers are new, but the cache is old.
+- A fresh `git checkout` resets source mtimes, but the restored cache still
+  holds `.pcm` files built against the older timestamps.
+- Two Xcode builds share one cache folder (the same `-derivedDataPath`) and
+  overwrite each other's modules.
+
+This is different from [stale-derived-data]. That entry is about the Swift
+*version*. This one is about header *timestamps*, and it happens even with the
+same Xcode version.
+
+**Fix** — delete the module cache. Rebuilding it only takes seconds:
+
+```bash
+rm -rf ~/Library/Developer/Xcode/DerivedData/ModuleCache.noindex \
+       "$DERIVED_DATA_PATH"/ModuleCache.noindex
+```
+
+In CI, leave `ModuleCache.noindex` out of the cache and keep caching the rest of
+DerivedData and SwiftPM. Put the Xcode version (`xcodebuild -version`) in the
+cache key, so each Xcode version gets its own cache.
+
+**Rule:** the module cache belongs to one Xcode and one checkout — never restore it across runs; key every build cache on the Xcode version.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
