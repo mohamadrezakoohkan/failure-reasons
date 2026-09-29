@@ -1200,6 +1200,49 @@ tool adds the attributes again. Move the clone to a folder that is not synced
 
 ---
 
+## [device-not-ready] Physical device: Developer Mode disabled / unpaired
+
+**Symptom** — building or testing on a real iPhone fails before install. The
+device is plugged in, but xcodebuild lists it under *Ineligible destinations*
+or says:
+
+```
+Developer Mode disabled. To use iPhone for development, enable Developer Mode in Settings → Privacy & Security.
+iPhone 11 is not available because it is unpaired. Pair with the device in the Xcode Devices Window, and respond to any pairing prompts on the device.
+The device "iPhone" is not available because it is not executable.
+```
+
+It often starts after an iOS or Xcode update, or on a CI device lab that
+nobody touches.
+
+**Cause** — the device is connected but not ready for development. Since iOS
+16, a device needs three things: Developer Mode on, a trusted pairing with this
+Mac, and a finished "Preparing device for development" step (Xcode copies
+debug support to the device). An update, a reset, or a new Mac can undo any of
+them. Also, Xcode (CoreDevice) sometimes reports Developer Mode as off when it
+only failed to read the status.
+
+**Fix** — check what the device state really is, then fix that one thing:
+
+```bash
+xcrun devicectl list devices                       # state: available / unavailable
+xcrun devicectl device info details --device <UDID> | grep -iE "developerMode|pairing"
+```
+
+- Developer Mode off: on the device, Settings → Privacy & Security → Developer
+  Mode → on, reboot, and confirm the prompt after reboot. It needs a person
+  with the passcode — CI cannot do it.
+- Unpaired: unlock the device, open Xcode → Window → Devices and Simulators,
+  tap *Trust* on the device and enter the passcode.
+- Not executable / preparing: keep the device unlocked and wait until the
+  Devices window stops showing "Preparing"; then run again.
+- It says off but the toggle is on: turn it off and on, reboot the device and
+  the Mac.
+
+**Rule:** before a device build, check `xcrun devicectl list devices`; after any iOS/Xcode update, someone must unlock each lab device and re-check Developer Mode and pairing by hand.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
