@@ -932,6 +932,51 @@ and point `CODE_SIGN_ENTITLEMENTS` there; `CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICA
 
 ---
 
+## [missing-input-file] Build input file cannot be found
+
+**Symptom** — the build stops before compiling anything useful:
+
+```
+error: Build input file cannot be found: '/…/App/Features/Old/OldView.swift'.
+       Did you forget to declare this file as an output of a script phase
+       or custom build rule which produces it?
+```
+
+Often passes locally and fails on CI or a fresh clone, or right after a
+rebase, a folder move, or a merge that touched `project.pbxproj`.
+
+**Cause** — the project still lists a path that does not exist when the build
+needs it. The usual cases:
+
+- The file was moved, renamed, or deleted on disk, but the reference in
+  `project.pbxproj` stayed (a red file in the navigator). Merges that resolve
+  `pbxproj` conflicts by hand leave these behind.
+- The file exists only on your machine: git-ignored, never committed, or a
+  generated file (SwiftGen, protobuf, `.xcconfig`) that CI never generates.
+- Case differs (`Foo.swift` vs `foo.swift`). The default macOS volume ignores
+  case, so it works locally; a case-sensitive CI volume does not.
+- A script phase produces the file, but runs after *Compile Sources* or does
+  not list it in *Output Files*, so the build system looks for it too early.
+- `INFOPLIST_FILE`, `CODE_SIGN_ENTITLEMENTS`, or a bridging header path in
+  build settings points at an old location.
+
+**Fix** — find where the stale path comes from, then fix that source:
+
+```bash
+grep -n "OldView.swift" App.xcodeproj/project.pbxproj
+xcodebuild -showBuildSettings -scheme App | grep -E "INFOPLIST_FILE|ENTITLEMENTS|BRIDGING"
+git ls-files | grep -i "oldview"
+```
+
+Remove and re-add the red reference, or regenerate the project if it comes
+from Tuist/XcodeGen (the manifest is the source to fix). For generated files,
+put the script phase before *Compile Sources* and declare the file in its
+*Output Files* — see [script-sandbox]. Commit files that are really sources.
+
+**Rule:** the project file must describe what is in git — after any move or `pbxproj` merge, do a clean build from a fresh clone before pushing.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
