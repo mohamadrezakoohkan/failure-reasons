@@ -977,6 +977,48 @@ put the script phase before *Compile Sources* and declare the file in its
 
 ---
 
+## [result-bundle-exists] Existing file at -resultBundlePath
+
+**Symptom** — xcodebuild quits in under a second, before it resolves packages
+or compiles anything:
+
+```
+xcodebuild: error: Existing file at -resultBundlePath "/…/Build.xcresult"
+```
+
+The first run works. The second run on the same machine fails, and so does a
+retry step on CI, or a local `make test` run twice in a row.
+
+**Cause** — xcodebuild will not overwrite or append to a result bundle. If the
+path already exists, it refuses to start. This path usually survives because:
+
+- The script uses a fixed path (`Build.xcresult`) and never deletes it.
+- A retry wrapper (fastlane `multi_scan`, a CI "retry on failure" step, a
+  `for` loop that reruns flaky tests) reruns with the same path.
+- A CI cache or a reused workspace brings back the bundle from an older job.
+- A run that crashed or was killed still left a half-written bundle.
+
+**Fix** — make each run's path unique, or delete it on purpose right before
+the run:
+
+```bash
+BUNDLE="build/Test-$(date +%Y%m%d-%H%M%S).xcresult"
+xcodebuild test -scheme App -destination "$DEST" -resultBundlePath "$BUNDLE"
+
+# or, with a fixed path:
+rm -rf build/Test.xcresult
+xcodebuild test ... -resultBundlePath build/Test.xcresult
+```
+
+Give each retry its own suffix (`-attempt2`) so the first failure is still
+there to read. You can combine them afterwards with
+`xcrun xcresulttool merge a.xcresult b.xcresult --output-path all.xcresult`.
+Do not add `*.xcresult` to CI caches.
+
+**Rule:** a result bundle path must be new for every xcodebuild run — use a timestamp or retry suffix, never a shared fixed name.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
