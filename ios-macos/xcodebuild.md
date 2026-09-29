@@ -1113,6 +1113,54 @@ it by hand: run `tuist generate` / `xcodegen` again. Do not use
 
 ---
 
+## [test-hang] Tests hang forever, or fail: exceeded execution time allowance
+
+**Symptom** — `xcodebuild test` stops printing output in the middle of the
+suite and stays there until the CI job is killed. Nothing is written to the
+`.xcresult`, so no test is shown as the cause. With timeouts turned on, one
+test fails instead and the run goes on:
+
+```
+Test Case '-[AppTests.SyncTests testRefresh]' started.
+error: -[AppTests.SyncTests testRefresh] : Test exceeded execution time allowance
+```
+
+**Cause** — one test never finishes. Test timeouts are off by default, so
+xcodebuild waits for it with no limit. Common reasons:
+
+- A deadlock on the main thread: `DispatchQueue.main.sync` called from the
+  main thread, or a semaphore waits on main for a callback that also runs on
+  main.
+- An `async` test awaits a continuation that is never resumed (look for
+  `SWIFT TASK CONTINUATION MISUSE … leaked its continuation`), or a
+  `wait(for:timeout:)` with a very large timeout.
+- A real network call, keychain call, or system permission alert that never
+  gets an answer on a headless CI simulator.
+- A UI test waits on an element that never appears, with no timeout.
+
+**Fix** — turn on timeouts so a hang becomes a normal test failure with a
+name. When a test goes over its time, Xcode takes a spindump, fails that test,
+restarts the test runner and runs the rest of the suite:
+
+```bash
+xcodebuild test -scheme App -destination "$DEST" \
+  -test-timeouts-enabled YES \
+  -default-test-execution-time-allowance 120 \
+  -maximum-test-execution-time-allowance 600 \
+  -resultBundlePath "build/Test-$(date +%s).xcresult"
+```
+
+The same setting is in the test plan (Configurations → Test Timeouts). One
+slow test can ask for more time with `executionTimeAllowance` (XCTest, rounded
+up to whole minutes) or `.timeLimit(.minutes(2))` (Swift Testing). Then open
+the spindump for the failed test in the result bundle: it shows the stack of
+the thread that is stuck. Fix that code — replace the real network call with a
+stub, or remove the blocking wait on main.
+
+**Rule:** CI always runs tests with `-test-timeouts-enabled YES`, so a hang fails one named test with a spindump instead of silently using the whole job timeout.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
