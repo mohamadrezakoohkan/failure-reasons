@@ -1361,6 +1361,50 @@ edits.
 
 ---
 
+## [module-redefinition] Redefinition of module — two module maps claim one name
+
+**Symptom** — Clang stops while building or importing a module:
+
+```
+error: redefinition of module 'DoubleConversion'
+  module DoubleConversion {
+         ^
+/…/Pods/Headers/Public/DoubleConversion/module.modulemap:1:8: note: previously defined here
+error: could not build module 'Darwin'
+```
+
+The follow-on `could not build module 'Darwin'` / `'Foundation'` errors are
+noise. The first `redefinition` line and its `previously defined here` note
+name the two files.
+
+**Cause** — Clang loads every `module.modulemap` it finds on the header and
+framework search paths. Two maps that declare the same module name collide:
+
+- The same library arrives twice: from CocoaPods *and* SPM, or through two
+  transitive dependencies that each vendor it.
+- A framework's source directory holds a `module.modulemap`, and so does its
+  built or installed copy. Both are on the search path.
+- A recursive search path (`$(SRCROOT)/**`) or a stale `HEADER_SEARCH_PATHS`
+  entry reaches a copied `include/` folder or old build products.
+- Several Xcodes are installed and a path points into the wrong one's SDK.
+
+**Fix** — find every map that declares the module:
+
+```bash
+grep -rl --include=module.modulemap "module DoubleConversion" \
+  Pods Packages ~/Library/Developer/Xcode/DerivedData 2>/dev/null
+```
+
+Keep one provider for the library and remove the other. Replace recursive
+search paths with exact ones. For a framework's own map, rename the source copy
+(for example `Foo.modulemap`) and point `MODULEMAP_FILE` at it, so only the
+built product is found by the default name. After the change, wipe DerivedData
+(→ [stale-derived-data]).
+
+**Rule:** one module name, one module map on the search path — find the second map, never rename the module to hide it.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
