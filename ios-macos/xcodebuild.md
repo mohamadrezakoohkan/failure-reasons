@@ -1320,6 +1320,47 @@ manifest, not in Xcode.
 
 ---
 
+## [embedded-binary-mismatch] Embedded binary not prefixed / not signed like the parent app
+
+**Symptom** — every target compiles, then the host app fails in the
+`ValidateEmbeddedBinary` step, right after the extension is copied in:
+
+```
+error: Embedded binary's bundle identifier is not prefixed with the parent app's bundle identifier.
+error: Embedded binary is not signed with the same certificate as the parent app.
+warning: The CFBundleVersion of an app extension ('1') must match that of its containing parent app ('412').
+```
+
+**Cause** — Xcode checks that each embedded extension, widget, or watch app
+matches the app that contains it. The settings drift apart because each target
+has its own build settings:
+
+- The extension's `PRODUCT_BUNDLE_IDENTIFIER` is not `<app id>.<suffix>`. This
+  is common when the app id changes per configuration (`.dev`, `.staging`) but
+  the extension id is hard-coded.
+- `DEVELOPMENT_TEAM`, `CODE_SIGN_IDENTITY`, or `CODE_SIGN_STYLE` differ between
+  targets. CI often overrides these for the app only.
+- `CURRENT_PROJECT_VERSION` / `MARKETING_VERSION` are bumped on the app only.
+  Xcode only warns, but App Store Connect rejects the upload.
+
+**Fix** — compare the settings of both targets for the same configuration:
+
+```bash
+for t in App Widget; do echo "== $t"; xcodebuild -showBuildSettings \
+  -project App.xcodeproj -target "$t" -configuration Release | grep -E \
+  " (PRODUCT_BUNDLE_IDENTIFIER|DEVELOPMENT_TEAM|CODE_SIGN_IDENTITY|CODE_SIGN_STYLE|CURRENT_PROJECT_VERSION|MARKETING_VERSION) ="; done
+```
+
+Build extension ids from the app id (for example `$(APP_BUNDLE_ID).widget`) and
+keep team, signing, and version settings in one shared `.xcconfig` for all
+targets. When CI passes signing overrides on the command line
+(`DEVELOPMENT_TEAM=…`), they apply to every target — prefer that to per-target
+edits.
+
+**Rule:** an extension is signed and versioned *with* its host — derive its settings from the app, never copy them.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
