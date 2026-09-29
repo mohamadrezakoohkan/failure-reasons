@@ -1106,8 +1106,8 @@ For a future format, either use the same Xcode as CI (see
 [wrong-developer-dir]), or go to File Inspector → Project Format in the newer
 Xcode, choose an older format and commit. Synchronized folders need Xcode 16,
 so convert them back to groups first. If the project is generated, do not fix
-it by hand: run `tuist generate` / `xcodegen` again. Add
-`*.pbxproj merge=union` only if you accept that you must check each merge.
+it by hand: run `tuist generate` / `xcodegen` again. Do not use
+`merge=union` for `*.pbxproj` — it hides conflicts and can cause this error.
 
 **Rule:** `plutil -lint project.pbxproj` must pass before a merge is pushed, and the whole team must build with the same Xcode that sets `objectVersion`.
 
