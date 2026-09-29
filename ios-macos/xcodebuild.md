@@ -1019,6 +1019,54 @@ Do not add `*.xcresult` to CI caches.
 
 ---
 
+## [compiler-crash] Swift compiler crashes: failed due to signal
+
+**Symptom** — no `error:` in your code, just a crash dump from the compiler:
+
+```
+error: compile command failed due to signal 11 (use -v to see invocation)
+Please submit a bug report (https://swift.org/contributing/#reporting-bugs)
+Stack dump:
+1.  Apple Swift version 6.x ...
+2.  While evaluating request TypeCheckSourceFileRequest(source_file "/…/Feed/FeedView.swift")
+3.  While type-checking 'FeedView' (at /…/Feed/FeedView.swift:12:8)
+** BUILD FAILED **  — Command SwiftCompile failed with a nonzero exit code
+```
+
+Often Release-only (archive fails, Debug is fine), or starts right after an
+Xcode update.
+
+**Cause** — the compiler itself hit a bug. The signal says which kind:
+
+- `signal 11` (segfault) or `signal 6` (abort / assertion) — a real compiler
+  bug, triggered by one construct: nested generics, result builders, macros,
+  `some`/`any` types, key paths, or code the optimizer inlines in Release.
+- `signal 9` (killed) — not a bug: the OS killed the compiler for using too
+  much memory. Common on small CI machines with many parallel jobs.
+- Rarely, a module cache built by another compiler version — see
+  [stale-derived-data].
+
+**Fix** — the stack dump names the file and often the line. Start there:
+
+```bash
+grep -nE "While (type-checking|evaluating|emitting|silgen).*at /" build.log | head
+# Release-only? Build one file at a time to find which file crashes:
+xcodebuild archive ... SWIFT_COMPILATION_MODE=singlefile
+# signal 9? Give each compiler more memory by running fewer jobs:
+xcodebuild ... -jobs 2
+```
+
+Rewrite the named construct into something simpler: add explicit types, split
+a large result builder or closure, move a generic helper out of the extension.
+Test with `-Onone` to check if the optimizer causes it. If the crash only
+happens in one optimized function, `@_optimize(none)` on that function is a
+workaround. Then try the newest Xcode, and report the reduced case to
+github.com/swiftlang/swift.
+
+**Rule:** a compiler crash is not your error message — read the `While …` lines in the stack dump to find the construct, rewrite it simpler, and treat `signal 9` as memory, not a bug.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
