@@ -1281,6 +1281,45 @@ does not match the SDK build breaks asset catalogs, even in device builds.
 
 ---
 
+## [scheme-not-testable] Scheme is not configured for the test action
+
+**Symptom** — `xcodebuild build` passes, but `test` stops before anything is
+built for testing:
+
+```
+xcodebuild: error: Scheme App is not currently configured for the test action.
+xcodebuild: error: Scheme App does not have an associated test plan named "CI".
+Tests in the target "AppTests" can't be run because "AppTests" isn't a member of the specified test plan or scheme.
+```
+
+**Cause** — the scheme exists ([scheme-not-found] is ruled out), but its Test
+action is empty or points at something that is not there. One of:
+
+- No test targets are listed in the scheme's Test action, so it has no
+  `<Testables>`. This happens with auto-created schemes and after a generator
+  (Tuist, XcodeGen) rebuilds the scheme without the test target.
+- The scheme uses test plans, but the `.xctestplan` file was moved, renamed, or
+  never committed. The `.xcscheme` still points at the old path.
+- `-testPlan` names a plan that is not attached to *this* scheme, or
+  `-only-testing:` names a target that is not in the active plan.
+
+**Fix** — see what the scheme actually tests:
+
+```bash
+xcodebuild -showTestPlans -scheme App -workspace App.xcworkspace
+grep -nE "<Testables|<TestPlans|reference =" \
+  App.xcodeproj/xcshareddata/xcschemes/App.xcscheme
+```
+
+Add the test target under Edit Scheme → Test (or to the test plan), make sure
+every `.xctestplan` it points to is in git, and pass `-testPlan` only with a
+name from `-showTestPlans`. For generated projects, fix the scheme in the
+manifest, not in Xcode.
+
+**Rule:** a scheme that builds is not a scheme that tests — check `-showTestPlans` before adding `test` to CI.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
