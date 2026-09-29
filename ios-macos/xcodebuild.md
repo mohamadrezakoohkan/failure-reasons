@@ -1445,6 +1445,58 @@ cache key, so each Xcode version gets its own cache.
 
 ---
 
+## [pif-transfer] Build service could not create build operation: unable to load transferred PIF
+
+**Symptom** — the build stops before any compiling starts:
+
+```
+xcodebuild: error: Build service could not create build operation:
+  unable to load transferred PIF: The workspace contains multiple references
+  with the same GUID 'PACKAGE:1YUBE3S3A43QP92YAIBS0U5OJYK9I2OP2::MAINGROUP'
+```
+
+A related message comes from the same step:
+`could not generate PIF because the workspace has not finished loading or is
+still waiting for package resolution`.
+
+**Cause** — Xcode turns the workspace into a PIF (Project Information File)
+and gives it to the build service. Every project and Swift package in the PIF
+gets a GUID. If two entries get the same GUID, or package resolution is still
+running, the build service rejects the PIF:
+
+- The same package appears twice. For example, a local package overrides a
+  remote one with the same identity, or two projects each add the same package.
+- `SourcePackages` still has old checkouts after a branch switch changed
+  `Package.resolved`.
+- `~/.gitconfig` has `[safe] bareRepository = explicit`. Some SourceTree
+  updates add it. SwiftPM keeps its package cache as bare git repos, so this
+  setting breaks the checkouts, and the error shows up as a GUID clash.
+- `xcodebuild` is run without resolving packages first, so the workspace has
+  not finished loading.
+
+**Fix**
+
+```bash
+git config --global --get-all safe.bareRepository   # "explicit"? remove it:
+git config --global --unset-all safe.bareRepository
+rm -rf ~/Library/Caches/org.swift.swiftpm \
+       ~/Library/Developer/Xcode/DerivedData/*/SourcePackages
+xcodebuild -resolvePackageDependencies -workspace App.xcworkspace -scheme App
+```
+
+If it still fails, look for a package that appears twice. Check for the same
+package URL, or a local path with the same name, in `project.pbxproj` and in
+every `Package.swift`. In the Xcode app, use File → Packages → Reset Package
+Caches.
+
+This is different from [spm-resolution]. There, the dependencies cannot be
+fetched. Here, they were fetched, but the build service cannot load the
+workspace.
+
+**Rule:** a PIF/GUID error is a package-graph problem, not a code problem — check `safe.bareRepository`, make every package appear exactly once, and resolve before building.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
