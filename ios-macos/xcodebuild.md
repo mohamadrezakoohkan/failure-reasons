@@ -891,6 +891,47 @@ the module stays fragile.
 
 ---
 
+## [entitlements-mismatch] Profile doesn't include / match the entitlement
+
+**Symptom** — signing works for simulator and for other targets, then a device
+build or archive fails right after someone adds a capability:
+
+```
+error: Provisioning profile "App AppStore" doesn't include the
+       com.apple.developer.associated-domains entitlement.
+error: Provisioning profile "App Dev" doesn't match the entitlements file's
+       value for the aps-environment entitlement.
+```
+
+**Cause** — two sources must agree. The target's `.entitlements` file
+(`CODE_SIGN_ENTITLEMENTS`) says what the app asks for. The provisioning profile
+embeds what the App ID was allowed *when the profile was generated*. Ticking a
+capability in Xcode edits only the file; a manual or `match`-managed profile
+stays old until it is regenerated. Values count too: App Group and keychain
+group IDs, or `aps-environment` `development` vs `production`, must be in the
+profile. A per-configuration entitlements file can make only Release fail.
+
+**Fix** — diff the two sides:
+
+```bash
+plutil -p App/App.entitlements
+security cms -D -i App.mobileprovision | plutil -extract Entitlements xml1 -o - -
+```
+
+Enable the capability on the App ID in the developer portal, then regenerate
+and reinstall the profile (`fastlane match <type> --force`, or let
+`-allowProvisioningUpdates` do it for automatic signing). If the entitlement
+was not meant to ship, remove it from the file instead.
+
+Related: `Entitlements file "App.entitlements" was modified during the build`
+means a script phase wrote to the file. Generate it into `$(DERIVED_FILE_DIR)`
+and point `CODE_SIGN_ENTITLEMENTS` there; `CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION
+= YES` only silences the check.
+
+**Rule:** a new capability is a profile change, not just a project change — regenerate the profile in the same PR that edits `.entitlements`.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
