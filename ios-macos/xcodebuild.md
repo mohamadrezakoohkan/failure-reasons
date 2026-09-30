@@ -1829,6 +1829,67 @@ into one binary. Add `-debug-symbols <absolute path to .dSYM>` after each
 
 ---
 
+## [infoplist-missing] Cannot code sign: target has no Info.plist
+
+**Symptom** — a target fails at the signing step, often a pod, a test
+bundle, or a target made by a generator (CocoaPods, Tuist, XcodeGen):
+
+```
+error: Cannot code sign because the target does not have an Info.plist file
+  and one is not being generated automatically. Apply an Info.plist file to
+  the target using the INFOPLIST_FILE build setting or generate one
+  automatically by setting the GENERATE_INFOPLIST_FILE build setting to YES
+  (recommended). (in target 'Foo' from project 'Pods')
+```
+
+**Cause** — every signed bundle needs an `Info.plist`. It comes from one of
+two settings: `INFOPLIST_FILE` (a file on disk) or
+`GENERATE_INFOPLIST_FILE = YES` (Xcode writes one). Here the target has
+neither for this configuration. Common ways to get there:
+
+- The target was made before Xcode 13 and never had `INFOPLIST_FILE`
+  set. Older Xcode did not complain; Xcode 14+ does. `pod lib lint` test
+  and app-host targets are a well-known case.
+- `INFOPLIST_FILE` is set only in some configurations. A new `Staging`
+  configuration copied from nothing, or an xcconfig not attached to it,
+  leaves it empty.
+- A generator spec lost the setting when it was upgraded.
+
+This is not [missing-input-file]. There, `INFOPLIST_FILE` points to a file
+that is gone. Here the setting is empty.
+
+**Fix**
+
+```bash
+# Which targets and configurations have neither setting?
+xcodebuild -showBuildSettings -workspace App.xcworkspace -scheme App \
+  -configuration Staging 2>/dev/null \
+  | grep -E "TARGET_NAME|INFOPLIST_FILE|GENERATE_INFOPLIST_FILE"
+```
+
+For your own targets, set `GENERATE_INFOPLIST_FILE = YES`. You can keep
+`INFOPLIST_FILE` too; Xcode merges the file with the generated keys. For
+pods, first update to a release that fixes it. Otherwise, set it in
+`post_install`:
+
+```ruby
+post_install do |installer|
+  installer.pods_project.targets.each do |t|
+    t.build_configurations.each do |c|
+      c.build_settings['GENERATE_INFOPLIST_FILE'] ||= 'YES'
+    end
+  end
+end
+```
+
+`INFOPLIST_KEY_*` settings (for example `INFOPLIST_KEY_CFBundleDisplayName`)
+only work when `GENERATE_INFOPLIST_FILE = YES`. With it off they are
+silently ignored.
+
+**Rule:** every signed target needs an Info.plist in every configuration — set `GENERATE_INFOPLIST_FILE = YES` unless a checked-in file is required.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
