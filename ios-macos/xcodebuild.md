@@ -1684,6 +1684,57 @@ tagging. Do not vendor the package just to get around the check.
 
 ---
 
+## [swift-version-unsupported] SWIFT_VERSION missing or no longer supported
+
+**Symptom** — the build stops before any Swift file compiles, naming one
+target (often a pod):
+
+```
+error: SWIFT_VERSION '3.0' is unsupported, supported versions are: 4.0, 4.2, 5.0, 6.0.
+  (in target 'Foo' from project 'Pods')
+error: The "Swift Language Version" (SWIFT_VERSION) build setting must be
+  set to a supported value for targets which use Swift.
+```
+
+**Cause** — every Swift target needs a `SWIFT_VERSION` language mode that the
+current compiler still accepts. The first error means the target asks for a
+mode that was dropped (3.x went with Xcode 10.2). The second means the target
+has no value at all. Common sources: an old pod whose podspec has no
+`swift_version`, a leftover `.swift-version` file, or a value set only in an
+xcconfig that `pod install` did not carry into `Pods.xcodeproj`.
+
+This is not a compiler mismatch like [stale-derived-data]. The setting is
+checked before compiling, so wiping DerivedData does nothing.
+
+**Fix**
+
+```bash
+# See which targets have a bad or empty value
+xcodebuild -showBuildSettings -workspace App.xcworkspace -scheme App 2>/dev/null \
+  | grep -E "TARGET_NAME|SWIFT_VERSION"
+```
+
+For your own targets, set the value in the project or xcconfig. For pods,
+prefer a release that declares `swift_version`. Otherwise, set it in the
+Podfile and run `pod install`:
+
+```ruby
+post_install do |installer|
+  installer.pods_project.targets.each do |t|
+    next unless t.name == 'Foo'
+    t.build_configurations.each { |c| c.build_settings['SWIFT_VERSION'] = '5.0' }
+  end
+end
+```
+
+Use the oldest mode the code builds in (usually `5.0`). Do not set `6.0`
+everywhere to silence the error; Swift 6 mode turns on strict concurrency
+checking and adds new errors.
+
+**Rule:** every Swift target must name a supported language mode — pin it per target, never trust a pod to inherit yours.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
