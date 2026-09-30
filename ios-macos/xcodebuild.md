@@ -1591,6 +1591,60 @@ cannot be built. Here, the scanner cannot find the module at all.
 
 ---
 
+## [libarclite-missing] Linker fails: File not found libarclite_*.a
+
+**Symptom** — every file compiles. Then the link step fails on a pod or old
+framework target:
+
+```
+ld: file not found: /Applications/Xcode.app/Contents/Developer/Toolchains/
+  XcodeDefault.xctoolchain/usr/lib/arc/libarclite_iphonesimulator.a
+clang: error: linker command failed with exit code 1
+```
+
+It can also say `libarclite_iphoneos.a` for device builds, or
+`libarclite_macosx.a` for Mac builds.
+
+**Cause** — `libarclite` was a small helper library that let ARC code run on
+very old OS versions. The linker adds it on its own when a target's
+deployment target is old enough, which usually means iOS 8 or lower. Xcode
+14.3 removed the `usr/lib/arc` folder, so the file the linker asks for is
+gone. The app target is usually fine. The problem is a pod or vendored
+project that still declares an ancient deployment target.
+
+This is different from [deployment-target]. There, Xcode shows a warning
+about the range. Here, the same old setting stops the build at link time.
+
+**Fix**
+
+```bash
+# Find the targets that still declare an old minimum
+grep -n "IPHONEOS_DEPLOYMENT_TARGET = [0-9]\." Pods/Pods.xcodeproj/project.pbxproj | sort -u
+```
+
+Raise only those targets in the Podfile `post_install` hook. Leave pods that
+already declare a higher value alone:
+
+```ruby
+post_install do |installer|
+  installer.pods_project.targets.each do |t|
+    t.build_configurations.each do |c|
+      if c.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_f < 12.0
+        c.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '12.0'
+      end
+    end
+  end
+end
+```
+
+Then run `pod install`. For a vendored `.xcodeproj`, raise its deployment
+target directly. Do not copy the `arc` folder from an old Xcode into the new
+one. The next Xcode update removes it again, and a CI image never has it.
+
+**Rule:** a missing `libarclite` means a dependency still targets iOS 8 — raise that target's minimum, never bring the library back.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
