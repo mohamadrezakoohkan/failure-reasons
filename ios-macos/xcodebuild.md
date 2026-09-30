@@ -1497,11 +1497,59 @@ workspace.
 
 ---
 
+## [toolchains-override] A leftover `TOOLCHAINS` variable swaps Xcode's compiler
+
+**Symptom** — `xcode-select -p` is correct, but the build uses a different
+Swift, or fails at package resolution or linking:
+
+```
+xcodebuild: error: Could not resolve package dependencies:
+  error: link command failed with exit code 1
+clang: error: unable to execute command: posix_spawn failed: No such file or directory
+```
+
+Other symptoms: iOS builds fail with `no such module 'Swift'`. Or the build
+passes in one terminal, fails in another, and always fails in CI.
+
+**Cause** — `xcrun` and `xcodebuild` read the `TOOLCHAINS` environment variable.
+When it names an `.xctoolchain` in `/Library/Developer/Toolchains`, they use
+that toolchain instead of the one in Xcode. `xcode-select` has no effect on
+this. Common ways it gets set:
+
+- `swiftly` (1.2+) or a snapshot install exports `TOOLCHAINS` in the shell
+  profile or the CI environment.
+- A test harness or script passes its whole environment on to `xcodebuild`.
+
+swift.org toolchains are built for macOS and Linux. They have no iOS standard
+library, and some tools Xcode needs are missing. Package manifests always
+load with Xcode's own SwiftPM, so the tools version can also disagree. A
+`TOOLCHAINS` value for a toolchain that is not installed is ignored without
+any warning, so the same shell can work on one machine and fail on another.
+
+This is different from [wrong-developer-dir]. There, the wrong *Xcode* is
+selected. Here, the right Xcode is selected, but its compiler is replaced.
+
+**Fix**
+
+```bash
+echo "TOOLCHAINS=$TOOLCHAINS"; xcrun --find swiftc   # must be inside Xcode.app
+env -u TOOLCHAINS xcodebuild ...                     # build without it
+```
+
+Remove the `export TOOLCHAINS=…` line from the shell profile or CI step. If
+`swift` must stay on a snapshot, put that toolchain's `usr/bin` first on
+`PATH` and do not set `TOOLCHAINS`, so `xcodebuild` keeps Xcode's toolchain.
+Never ship an App Store build made with a non-Xcode toolchain.
+
+**Rule:** `xcodebuild` should never see `TOOLCHAINS` — unset it for every Xcode build and check `xcrun --find swiftc` whenever the compiler seems wrong.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
 
-1. `xcode-select -p` — right Xcode? → [wrong-developer-dir]
+1. `xcode-select -p` — right Xcode? → [wrong-developer-dir]; `echo $TOOLCHAINS` empty? → [toolchains-override]
 2. `xcodebuild -list` — scheme actually exists and is shared? → [scheme-not-found]
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]
