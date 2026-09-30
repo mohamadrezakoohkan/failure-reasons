@@ -1735,6 +1735,53 @@ checking and adds new errors.
 
 ---
 
+## [spm-platform-minimum] Package requires a higher minimum platform than the target
+
+**Symptom** — resolution succeeds, then the build fails on the target that
+links the package:
+
+```
+error: The package product 'Foo' requires minimum platform version 16.0 for
+  the iOS platform, but this target supports 15.0 (in target 'Widget' from project 'App')
+```
+
+For a prebuilt module (an `.xcframework` or binary target) it shows up at
+compile time instead:
+
+```
+error: compiling for iOS 15.0, but module 'Foo' has a minimum deployment target of iOS 16.0
+```
+
+**Cause** — a package's `platforms:` line in `Package.swift` sets a minimum OS,
+and every target that links one of its products must meet it. This usually
+starts after a package bump that raised the floor, even as a minor version. It
+also happens when the app is fine but a smaller target is not. An extension,
+widget, or test target that kept an older `IPHONEOS_DEPLOYMENT_TARGET` is
+checked on its own.
+
+This is the reverse of [deployment-target]. There, your minimum is too old for
+Xcode. Here, your minimum is too old for the package. Clearing caches does not help.
+
+**Fix**
+
+```bash
+# Which targets link the package, and at what minimum?
+xcodebuild -showBuildSettings -workspace App.xcworkspace -scheme App 2>/dev/null \
+  | grep -E "TARGET_NAME|IPHONEOS_DEPLOYMENT_TARGET"
+# What the resolved package actually asks for
+grep -A4 "platforms" ~/Library/Developer/Xcode/DerivedData/App-*/SourcePackages/checkouts/Foo/Package.swift
+```
+
+Either raise the failing target's deployment target to the package's floor, or
+pin the package to the last release that still supports your minimum
+(`exact:` or `.upToNextMinor(from:)`) and commit `Package.resolved`. Keep all
+targets that share packages on the same minimum, ideally set once in a shared
+xcconfig.
+
+**Rule:** a package bump can raise your minimum OS — check its `platforms:` before accepting the update, and keep every linking target on one floor.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
