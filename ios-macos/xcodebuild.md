@@ -1782,6 +1782,53 @@ xcconfig.
 
 ---
 
+## [xcframework-create] -create-xcframework rejects the archived frameworks
+
+**Symptom** — each archive succeeds, then packaging them fails:
+
+```
+error: the path does not point to a valid framework: /…/ios.xcarchive/Products/Library/Frameworks/Foo.framework
+error: Both 'ios-arm64-simulator' and 'ios-x86_64-simulator' represent two equivalent library definitions.
+error: binaries with multiple platforms are not supported '/…/Foo.framework/Foo'
+```
+
+Or it passes, but apps on a newer Xcode fail with "module compiled with
+Swift X cannot be imported" (→ [stale-derived-data], the prebuilt case).
+
+**Cause** — an XCFramework holds one slice per *platform variant* (device,
+simulator, Mac Catalyst), and each slice must be a real, single-platform
+framework. The usual mistakes:
+
+- `SKIP_INSTALL` is `YES` (the default for frameworks), so the archive has no
+  `Products/Library/Frameworks` folder. The path in the first error is empty.
+- Old fat-framework scripts: one archive per *architecture*, or a `lipo`-merged
+  device + simulator binary. Arm64 and x86_64 simulator builds are one variant
+  and must be one binary.
+- `BUILD_LIBRARY_FOR_DISTRIBUTION` is off, so no `.swiftinterface` is shipped.
+  It builds, but only on the exact Swift compiler that made it.
+
+**Fix** — one archive per platform, then combine:
+
+```bash
+for p in "iOS" "iOS Simulator"; do
+  xcodebuild archive -scheme Foo -destination "generic/platform=$p" \
+    -archivePath "build/$p.xcarchive" \
+    SKIP_INSTALL=NO BUILD_LIBRARY_FOR_DISTRIBUTION=YES
+done
+xcodebuild -create-xcframework \
+  -framework "build/iOS.xcarchive/Products/Library/Frameworks/Foo.framework" \
+  -framework "build/iOS Simulator.xcarchive/Products/Library/Frameworks/Foo.framework" \
+  -output build/Foo.xcframework
+```
+
+A generic simulator destination already builds both simulator architectures
+into one binary. Add `-debug-symbols <absolute path to .dSYM>` after each
+`-framework` to ship dSYMs; relative paths are rejected.
+
+**Rule:** one archive per platform with `SKIP_INSTALL=NO` and `BUILD_LIBRARY_FOR_DISTRIBUTION=YES` — never `lipo` device and simulator together.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
