@@ -1645,6 +1645,45 @@ one. The next Xcode update removes it again, and a CI image never has it.
 
 ---
 
+## [spm-unsafe-flags] Package product uses unsafe build flags
+
+**Symptom** — package resolution succeeds, then the build (or Xcode's
+package graph) refuses one dependency:
+
+```
+error: The package product 'Foo' cannot be used as a dependency of this
+target because it uses unsafe build flags.
+```
+
+It often appears right after bumping a package to a new tag, while the old
+tag built fine.
+
+**Cause** — the package's `Package.swift` sets `unsafeFlags(...)` in
+`swiftSettings`, `cSettings` or `linkerSettings`. SwiftPM allows those flags
+only in the root package, a local (path) package, or a remote package pinned
+by branch or revision. A remote package required **by version** (`from:`,
+`exact:`, a range) is rejected. The maintainer usually added a flag such as
+`-enable-testing` or `-warnings-as-errors` and tagged a release by mistake.
+
+This is different from [spm-resolution]. There, SwiftPM cannot pick a version.
+Here, the version resolves; the manifest is then refused.
+
+**Fix**
+
+```bash
+# Confirm which dependency declares the flags
+grep -rn "unsafeFlags" ~/Library/Developer/Xcode/DerivedData/*/SourcePackages/checkouts/*/Package.swift
+```
+
+Pin the previous tag that has no `unsafeFlags`, or wait for a patch release
+and report it upstream. As a stopgap, pin by `revision:` to the same commit.
+If you own the package, move the flag behind a condition or drop it before
+tagging. Do not vendor the package just to get around the check.
+
+**Rule:** `unsafeFlags` are for local work — a tagged release that ships them breaks every version-based consumer.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
