@@ -1890,6 +1890,49 @@ silently ignored.
 
 ---
 
+## [bitcode-rejected] Upload rejected: the executable contains bitcode
+
+**Symptom** — the archive builds, but App Store Connect refuses it. You see
+this from `-exportArchive` with `destination = upload`, or from
+`altool`/Transporter:
+
+```
+ITMS-90482: Invalid Executable - The executable
+  'App.app/Frameworks/Foo.framework/Foo' contains bitcode.
+```
+
+**Cause** — Xcode 14 deprecated bitcode, and uploads made with Xcode 16 or
+later reject any binary that still has it. Your own targets are almost never
+the problem: Xcode 14+ ignores `ENABLE_BITCODE = YES` and only warns. The
+bitcode comes from a **prebuilt** binary — a vendored `.framework` or
+`.xcframework` (an old analytics or ads SDK, Hermes in older React Native)
+that was compiled with bitcode years ago.
+
+**Fix**
+
+```bash
+# Find which embedded binaries still have a bitcode section
+for f in App.xcarchive/Products/Applications/App.app/Frameworks/*.framework; do
+  n=$(basename "$f" .framework)
+  otool -l "$f/$n" | grep -q __LLVM && echo "bitcode: $n"
+done
+```
+
+The best fix is to update that SDK to a release built without bitcode. If
+you cannot, strip it before the binary is embedded and signed (stripping a
+signed binary breaks its signature):
+
+```bash
+xcrun bitcode_strip -r Foo.framework/Foo -o Foo.framework/Foo
+```
+
+With CocoaPods, run that on the vendored binary under `Pods/` in
+`post_install`. Also set `ENABLE_BITCODE = NO` there to silence the warning.
+
+**Rule:** only prebuilt binaries still carry bitcode — check them with `otool -l | grep __LLVM` before you upload, then update or strip them.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
