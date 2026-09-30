@@ -1933,6 +1933,53 @@ With CocoaPods, run that on the vendored binary under `Pods/` in
 
 ---
 
+## [tcc-protected-folder] Operation not permitted when run from launchd, cron or SSH
+
+**Symptom** — the same command works in Terminal but fails when a
+LaunchAgent, a cron job, a self-hosted CI runner or an SSH session runs it.
+It fails before anything compiles:
+
+```
+xcodebuild: error: Unable to read project 'App.xcodeproj'.
+  Reason: The file "project.pbxproj" couldn't be opened because you don't
+  have permission to view it.
+shell-init: error retrieving current directory: getcwd: cannot access
+  parent directories: Operation not permitted
+```
+
+**Cause** — macOS privacy protection (TCC). `~/Desktop`, `~/Documents`,
+`~/Downloads`, iCloud Drive and external volumes need a consent grant for
+the app that started the process. Terminal already has that grant, but a
+process started by launchd, cron or `sshd` does not. There is no one to
+click the prompt, so the read fails with `EPERM`. `chmod`, `sudo` and
+running as root do not help. The Unix permissions are fine; TCC is what
+blocks it. This is not [script-sandbox], which only blocks writes from
+build-phase scripts.
+
+**Fix** — confirm it from the same context, then move the checkout or
+grant access:
+
+```bash
+# Run this from the agent / cron / ssh context, not from Terminal
+ls ~/Desktop/App >/dev/null && echo ok
+# See what TCC denied
+log show --last 5m --predicate 'subsystem == "com.apple.TCC"' | grep -i deny
+```
+
+- Best: keep the checkout outside the protected folders, for example
+  `~/Developer/App` or `~/src/App`. No grant is needed, and it keeps working
+  after OS updates.
+- If you cannot move it, go to System Settings → Privacy & Security → Full
+  Disk Access and add the binary that starts the job: `/usr/sbin/cron`,
+  `/bin/bash`, `/bin/zsh`, the runner's own binary or its bundled `node`.
+  Runner updates change that path, so you will have to add it again.
+- For SSH, turn on System Settings → General → Sharing → Remote Login (i) →
+  "Allow full disk access for remote users".
+
+**Rule:** background builds never touch `~/Desktop`, `~/Documents` or `~/Downloads` — keep checkouts in `~/Developer`, and do not rely on a Full Disk Access grant that the next update can break.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
