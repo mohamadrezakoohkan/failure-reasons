@@ -1545,6 +1545,52 @@ Never ship an App Store build made with a non-Xcode toolchain.
 
 ---
 
+## [explicit-modules] Unable to find module dependency after moving to Xcode 26
+
+**Symptom** — code that built on Xcode 16 now fails before it compiles:
+
+```
+error: Unable to find module dependency: 'Networking'
+error: Compilation search paths unable to resolve module dependency: 'Testing'
+```
+
+The `import` is fine and the module exists. Often it only fails for
+`build-for-testing`, for a device, or for macOS.
+
+**Cause** — Xcode 26 turns on *explicitly built modules* for Swift
+(`SWIFT_ENABLE_EXPLICIT_MODULES`); Xcode 16 already did it for C/ObjC
+(`CLANG_ENABLE_EXPLICIT_MODULES`). Before compiling, the build scans every
+`import` and builds each module from the target's own declared dependencies
+and search paths. Before this, the compiler found modules in whatever
+DerivedData already held, so these problems were hidden:
+
+- A target imports a module it does not depend on. It worked because another
+  target built that module first (transitive or lucky build order).
+- `import Testing` or `import XCTest` in an app or library target.
+- CocoaPods or hand-made framework search paths that point at a module
+  without a module map the scanner can find. Newer clang also stops looking
+  for module maps in SDK subdirectories.
+
+**Fix**
+
+```bash
+# Confirm it is this: the build passes with explicit modules off
+xcodebuild ... SWIFT_ENABLE_EXPLICIT_MODULES=NO CLANG_ENABLE_EXPLICIT_MODULES=NO
+```
+
+Then fix the graph, not the setting. Add the missing module to the target's
+dependencies (Xcode target, or `dependencies:` in `Package.swift`). Remove test
+framework imports from non-test targets. For pods, run `pod deintegrate && pod
+install` on a current CocoaPods. Turn the setting off in the project only as a
+short-term workaround.
+
+This is different from [non-modular-header]. There, a module is found but
+cannot be built. Here, the scanner cannot find the module at all.
+
+**Rule:** after an Xcode upgrade, "unable to find module dependency" means an undeclared dependency — declare every module a target imports instead of relying on build order.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
