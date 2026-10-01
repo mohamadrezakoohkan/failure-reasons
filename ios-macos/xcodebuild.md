@@ -2278,6 +2278,52 @@ arch -arm64 xcodebuild …           # one-off native run
 
 ---
 
+## [privacy-manifest] Upload accepted, then rejected: ITMS-91053 / ITMS-91061
+
+**Symptom** — `archive`, `-exportArchive` and the upload all succeed. Minutes
+later App Store Connect emails that the build is invalid:
+
+```
+ITMS-91053: Missing API declaration - Your app's code in the "Foo" file
+references one or more APIs that require reasons, including …
+NSPrivacyAccessedAPICategoryUserDefaults
+ITMS-91061: Missing privacy manifest - … "Frameworks/Bar.framework/Bar" …
+```
+
+**Cause** — Apple scans the uploaded binary, not your project. Two checks:
+
+- **91053** — some code (yours or an SDK's) calls a "required reason" API
+  (`UserDefaults`, file timestamps, system boot time, disk space, active
+  keyboards) and no `PrivacyInfo.xcprivacy` in the bundle declares a reason.
+- **91061** — an SDK on Apple's list of common third-party SDKs is embedded
+  without its own privacy manifest (and signature), usually an old version.
+
+A manifest that exists but never reaches the bundle fails the same way: a
+static library or static framework drops its manifest unless it ships it in
+a resource bundle, and a file not in a target's Copy Bundle Resources is not
+copied.
+
+This is not [export-archive]: nothing fails locally, so CI stays green.
+
+**Fix** — see what the archive really contains, then fill the gaps:
+
+```bash
+# Every manifest that made it into the built app
+find Build.xcarchive/Products/Applications -name PrivacyInfo.xcprivacy
+```
+
+- Xcode Organizer → right-click the archive → **Generate Privacy Report**
+  shows the merged result; any API category missing there is what 91053 names.
+- Your code: add `PrivacyInfo.xcprivacy` to the app target with
+  `NSPrivacyAccessedAPITypes` and a reason code (e.g. `CA92.1` for
+  `UserDefaults` used only by the app).
+- SDKs: upgrade to a version that ships a manifest. For a static pod, the
+  manifest must be in `resource_bundles`, not `resources`.
+
+**Rule:** the App Store checks the binary — confirm every `PrivacyInfo.xcprivacy` is inside the `.xcarchive` before uploading, not just in the repo.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
