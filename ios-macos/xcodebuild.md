@@ -2789,6 +2789,43 @@ check it again after every Xcode update. Do not hand-edit the shipped
 
 ---
 
+## [missing-required-module] Importing a framework fails: Missing required module 'X'
+
+**Symptom** — the framework builds on its own. The app or test target that
+imports it fails on the `import` line:
+
+```
+error: Missing required module 'CSQLite'
+```
+
+**Cause** — the framework imports a private Clang module (a C target, or an
+internal `module.modulemap`) with a plain `import CSQLite`. That import is then
+written into the framework's `.swiftmodule` / `.swiftinterface`. So every
+consumer must also find `CSQLite`, but its module map is not shipped in the
+`.xcframework` and is not on the consumer's search paths. Test targets and
+xcframeworks hit this most. Turning on Swift 6 mode can also bring it out.
+
+This is not [non-modular-header]. There, the module cannot be *built*. Here, it
+was built, but the consumer cannot *find* it.
+
+**Fix**
+
+```bash
+# Which private modules leak into the shipped interface?
+grep -h "^import" Foo.xcframework/*/Foo.framework/Modules/Foo.swiftmodule/*.swiftinterface
+```
+
+Best: hide the import so it stays out of the interface. Write
+`internal import CSQLite` (Swift 5.9+, SE-0409). On older compilers, write
+`@_implementationOnly import CSQLite`. Do this in *every* file that imports
+it. No public API may then use a `CSQLite` type. For a target that is not
+shipped (e.g. a unit-test target), a quick fix is to add the folder with the
+module map to the consumer's `SWIFT_INCLUDE_PATHS`.
+
+**Rule:** a private C module must never appear in a framework's public imports.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2798,7 +2835,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
