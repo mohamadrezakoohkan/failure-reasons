@@ -2109,6 +2109,48 @@ never ends up in the path.
 
 ---
 
+## [lfs-pointer] Binaries are Git LFS pointer files, not the real files
+
+**Symptom** — the code compiles, then a vendored library or asset fails as
+if it were broken. This often happens on a new clone or a CI runner:
+
+```
+ld: warning: ignoring file …/Vendor/libFoo.a, building for iOS-arm64 but
+attempting to link with file built for unknown-unsupported file format
+( 0x76 0x65 0x72 0x73 0x69 0x6F 0x6E 0x20 … )
+Undefined symbols for architecture arm64: "_OBJC_CLASS_$_Foo"
+```
+
+Images or `.mlmodel` files in the same repo can fail too, with errors like
+"not a valid PNG" or "could not be opened".
+
+**Cause** — the repo stores large files in Git LFS, but the checkout never
+downloaded them. Each file on disk is a small text pointer (under 200 bytes)
+that starts with `version https://git-lfs…`. The bytes `0x76 0x65 0x72 0x73`
+are the ASCII for "vers". This happens when `git-lfs` is not installed on
+the machine, when CI checks out with LFS off (`actions/checkout` has
+`lfs: false` by default), or when `GIT_LFS_SKIP_SMUDGE=1` is set.
+
+This is not [undefined-symbols] (the symbols are in the real library) and
+not [simulator-arch] (the file has no architecture at all; it is text).
+
+**Fix** — check that it is a pointer, then download the real files:
+
+```bash
+file Vendor/libFoo.a     # "ASCII text" means it is a pointer
+git lfs ls-files         # a "-" after the hash means not downloaded
+git lfs install && git lfs pull
+```
+
+On GitHub Actions use `actions/checkout` with `lfs: true`. On other CI, add
+`git lfs pull` after the clone. If the file comes from a Swift package that
+uses LFS, SPM does not download LFS files. Ship it as a `binaryTarget` zip
+instead.
+
+**Rule:** when the linker sees a library as "unknown file format", run `file` on it first; an ASCII-text binary means `git lfs pull`.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2117,7 +2159,7 @@ Work down this list before deep-diving a log:
 2. `xcodebuild -list` — scheme actually exists and is shared? → [scheme-not-found]
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
-5. Wipe DerivedData, retry once. → [stale-derived-data]; space in `pwd`? → [path-with-spaces]
+5. Wipe DerivedData, retry once. → [stale-derived-data]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
 6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error.
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
