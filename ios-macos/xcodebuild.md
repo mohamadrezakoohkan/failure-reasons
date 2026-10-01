@@ -2367,6 +2367,45 @@ last release with a supported tools version (`.upToNextMinor(from:)` or
 
 ---
 
+## [spm-fingerprint-mismatch] Revision does not match previously recorded value
+
+**Symptom** — resolution fails on one machine (or one runner), works on a fresh one:
+
+```
+xcodebuild: error: Could not resolve package dependencies:
+  Revision 39abfc9... for swift-foo remoteSourceControl https://github.com/acme/swift-foo
+  version 2.0.0 does not match previously recorded value ccf49c3...
+```
+
+**Cause** — SwiftPM is trust-on-first-use: the first time it resolves a
+version it records that tag's commit under
+`~/Library/org.swift.swiftpm/security/fingerprints/`. If the maintainer later
+deletes and re-pushes the tag at another commit, every machine that already
+saw the old one refuses the new one. Fresh CI runners and new laptops have no
+record, so it "only fails for some people".
+
+This is not [spm-resolution] (network, auth, cache) and not
+[macro-plugin-trust] (the same `security/` folder, but a different record):
+the tag itself changed under you.
+
+**Fix**
+
+```bash
+# Which package, and what did it record?
+ls ~/Library/org.swift.swiftpm/security/fingerprints/ | grep -i swift-foo
+# Drop only that package's record, then resolve again
+rm ~/Library/org.swift.swiftpm/security/fingerprints/swift-foo-*.json
+xcodebuild -resolvePackageDependencies -scheme App
+```
+
+Check the new commit is one you expect before trusting it — a moved tag is
+exactly what the check exists to catch. Ask the maintainer to cut a new
+version instead of re-tagging; if they will not, pin by `revision:`.
+
+**Rule:** a released tag is immutable — when it moves, verify the new commit, clear that one fingerprint, and never wipe the whole `security/` folder by reflex.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2375,7 +2414,7 @@ Work down this list before deep-diving a log:
 2. `xcodebuild -list` — scheme actually exists and is shared? → [scheme-not-found]
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
-5. Wipe DerivedData, retry once. → [stale-derived-data]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
+5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
 6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
