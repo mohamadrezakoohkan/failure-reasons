@@ -2061,6 +2061,54 @@ stopgap, `-jobs 4` opens fewer files at once.
 
 ---
 
+## [path-with-spaces] Build breaks only when the checkout path has a space
+
+**Symptom** — the same commit builds on one machine and fails on another,
+or fails only on CI jobs whose names contain a space:
+
+```
+/…/Script-1A2B.sh: line 2: /Users/ci/My: No such file or directory
+Command PhaseScriptExecution failed with a nonzero exit code
+fatal error: 'Foo/Foo.h' file not found
+ld: warning: directory not found for option '-LApp'
+```
+
+`pwd` shows something like `/Users/ci/My App/` or `~/Desktop/Work Projects/`.
+
+**Cause** — Xcode itself handles spaces, but two things around it do not:
+
+- a run-script phase that uses a path without quotes, like
+  `${SRCROOT}/scripts/lint.sh`. The shell splits it at the space and runs
+  `/Users/ci/My`.
+- a search-path setting (`HEADER_SEARCH_PATHS`, `FRAMEWORK_SEARCH_PATHS`,
+  `LIBRARY_SEARCH_PATHS`, `OTHER_LDFLAGS`) in an `.xcconfig` written as
+  `$(SRCROOT)/Vendor/My Lib`. These settings are lists split at spaces, so
+  Xcode searches `…/Vendor/My` and `Lib`.
+
+This is not [script-path-missing] (the tool exists) and not
+[missing-input-file] (the file exists). The path was split in two.
+
+**Fix** — confirm it first: clone into a path with no space and build
+again. If that passes, quote every path:
+
+```bash
+"${SRCROOT}/scripts/lint.sh" "${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME}"
+```
+
+```
+HEADER_SEARCH_PATHS = $(inherited) "$(SRCROOT)/Vendor/My Lib"
+```
+
+To find the scripts that need quotes, run
+`grep -n 'shellScript' *.xcodeproj/project.pbxproj` and look for `${SRCROOT}`
+or `${PROJECT_DIR}` with no `\"` before it.
+On CI, set the workspace to a path with no spaces, so a branch or job name
+never ends up in the path.
+
+**Rule:** quote every `${…}` path in build scripts and xcconfig lists, and give CI a workspace path with no spaces.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2069,7 +2117,7 @@ Work down this list before deep-diving a log:
 2. `xcodebuild -list` — scheme actually exists and is shared? → [scheme-not-found]
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
-5. Wipe DerivedData, retry once. → [stale-derived-data]
+5. Wipe DerivedData, retry once. → [stale-derived-data]; space in `pwd`? → [path-with-spaces]
 6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error.
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
