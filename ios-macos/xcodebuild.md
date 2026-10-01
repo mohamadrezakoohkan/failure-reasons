@@ -2445,6 +2445,52 @@ removed.
 
 ---
 
+## [build-number-reused] Upload rejected: Redundant Binary Upload / train closed
+
+**Symptom** — archive and export succeed, the upload step is refused:
+
+```
+ERROR ITMS-4238: "Redundant Binary Upload. You've already uploaded a build
+  with build number '412' for version number '1.2.0'."
+ERROR ITMS-90186: "Invalid Pre-Release Train. The train version '1.2.0' is
+  closed for new build submissions"
+ERROR ITMS-90062: "The value for key CFBundleShortVersionString [1.2.0] in
+  the Info.plist file must contain a higher version than that of the
+  previously approved version [1.2.0]."
+```
+
+**Cause** — App Store Connect keys every upload by (version, build). 4238:
+that build number was already used for this version — often a re-run CI job,
+or two branches counting from the same base. 90186 / 90062: that version is
+already released, so it takes no new builds at all. The sneaky case is a
+bump that never lands: an Info.plist with a literal `CFBundleVersion` instead
+of `$(CURRENT_PROJECT_VERSION)` ignores the setting you passed to
+`xcodebuild`, so the archive keeps the old number.
+
+This is not [export-archive] (signing / export options; here the upload
+itself is refused) and not [embedded-binary-mismatch] (extension and app
+disagree; here the whole app's number is the problem).
+
+**Fix**
+
+```bash
+# What actually went into the archive?
+/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' -c 'Print :CFBundleVersion' \
+  App.xcarchive/Products/Applications/App.app/Info.plist
+# Bump at archive time — applies to every target, extensions included
+xcodebuild archive -scheme App -archivePath App.xcarchive \
+  CURRENT_PROJECT_VERSION="$CI_BUILD_NUMBER"
+```
+
+If the printed number did not change, replace the literals in every
+Info.plist with `$(CURRENT_PROJECT_VERSION)` / `$(MARKETING_VERSION)`. Use a
+number that only grows (CI run number, or latest TestFlight build + 1), never
+a git commit count. For 90186 / 90062, bump `MARKETING_VERSION` instead.
+
+**Rule:** read the version and build from the archive, not the project — derive the build number from something that only grows, and pass it in at archive time.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2454,7 +2500,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
