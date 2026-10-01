@@ -2745,6 +2745,50 @@ runs `PlistBuddy -c "Set :MinimumOSVersion $IPHONEOS_DEPLOYMENT_TARGET"` (or
 
 ---
 
+## [interface-type-shadows-module] Shipped .swiftinterface fails: X is not a member type of X.X
+
+**Symptom** — the framework builds and archives fine. But once it ships as an
+`.xcframework`, or a newer Xcode opens it, the code that imports it fails:
+
+```
+error: 'Direction' is not a member type of class 'Compass.Compass'
+error: failed to build module 'Compass' for importation due to the errors above;
+the textual interface may be broken by project issues or a compiler bug
+```
+
+**Cause** — with `BUILD_LIBRARY_FOR_DISTRIBUTION=YES`, the compiler writes a
+text `.swiftinterface` that spells every type out in full
+(`Compass.Direction`). Say the module declares a public type with its own name
+(`class Compass` in module `Compass`), or imports a module that does. Then
+`Compass.` points to the *type*, not the module, and the interface can no
+longer be read. Your own build uses the binary `.swiftmodule`, so it never sees
+this. Only consumers, or a compiler that rebuilds from the interface, hit it.
+
+This is not [xcframework-create]. There, the bundle cannot be made at all. Here,
+the bundle is made, but its interface is broken.
+
+**Fix**
+
+```bash
+# Catch it when the interface is written, not in the consumer's build
+xcodebuild archive ... BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
+  OTHER_SWIFT_FLAGS='$(inherited) -verify-emitted-module-interface'
+# Does a public type have the module's own name?
+grep -nE "^public .*(class|struct|enum|protocol|actor) Compass\b" \
+  Compass.xcframework/*/Compass.framework/Modules/Compass.swiftmodule/*.swiftinterface
+```
+
+The only lasting fix is to rename the type or the module (e.g. `Compass` →
+`CompassView`). Until then, add `-Xfrontend -alias-module-names-in-module-interface`
+to `OTHER_SWIFT_FLAGS`. It writes module names as aliases (`Compass__`) that
+cannot be confused with types. Apple does not officially support this flag, so
+check it again after every Xcode update. Do not hand-edit the shipped
+`.swiftinterface`.
+
+**Rule:** a module built for distribution must not have a public type with its own name.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2754,7 +2798,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
