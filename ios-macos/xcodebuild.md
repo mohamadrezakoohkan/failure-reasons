@@ -2491,6 +2491,45 @@ a git commit count. For 90186 / 90062, bump `MARKETING_VERSION` instead.
 
 ---
 
+## [sdk-too-old] Upload rejected: ITMS-90725 SDK version issue
+
+**Symptom** — archive, export and signing all pass; App Store Connect warns,
+then (after Apple's deadline) refuses the build:
+
+```
+ITMS-90725: SDK version issue - This app was built with the iOS 18.5 SDK.
+All iOS and iPadOS apps must be built with the iOS 26 SDK or later,
+included in Xcode 26 or later, in order to be uploaded to App Store Connect.
+```
+
+**Cause** — Apple raises the minimum *build* SDK every spring (iOS 18 SDK from
+April 2025, iOS 26 SDK / Xcode 26 from April 28, 2026). The SDK comes from
+whichever Xcode ran `xcodebuild`, so a CI image or `xcode-select` still on the
+old Xcode keeps shipping old-SDK builds. Your deployment target does not
+matter here: you can build with the new SDK and still support old iOS.
+
+This is not [deployment-target] (minimum OS the app runs on) and not
+[build-number-reused] (the number is refused, not the SDK).
+
+**Fix**
+
+```bash
+# Which SDK and Xcode built this archive?
+/usr/libexec/PlistBuddy -c 'Print :DTSDKName' -c 'Print :DTXcode' \
+  App.xcarchive/Products/Applications/App.app/Info.plist
+# Point the runner at the new Xcode, then archive again
+sudo xcode-select -s /Applications/Xcode_26.app && xcodebuild -version
+```
+
+Pin the Xcode version in CI config (runner image, `.xcode-version`, fastlane
+`xcversion`) so a cached old image cannot win. Expect new warnings and
+dependency bumps on the first build with the new SDK — upgrade before the
+warning becomes a rejection.
+
+**Rule:** when ITMS-90725 appears as a warning, plan the Xcode upgrade then — check `DTSDKName` in the archive, not the Xcode you have on your laptop.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2500,7 +2539,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
