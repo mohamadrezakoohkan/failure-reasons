@@ -2324,11 +2324,54 @@ find Build.xcarchive/Products/Applications -name PrivacyInfo.xcprivacy
 
 ---
 
+## [swift-tools-version] Package needs a newer Swift than this Xcode has
+
+**Symptom** — resolution stops before anything compiles:
+
+```
+xcodebuild: error: Could not resolve package dependencies:
+  package 'swift-foo' is using Swift tools version 6.0.0 but the installed
+  version is 5.10.0 in https://github.com/acme/swift-foo
+```
+
+**Cause** — the first line of a dependency's `Package.swift`
+(`// swift-tools-version:6.0`) is the minimum SwiftPM that may read it, and
+SwiftPM is tied to Xcode (Xcode 15.3 → 5.10, Xcode 16 → 6.0). It usually
+appears without anyone touching Xcode:
+
+- The package raised its tools version in a minor or patch release, and an
+  unpinned resolve (CI, `rm Package.resolved`, "Update to Latest") pulled it.
+- A developer on a newer Xcode resolved and committed `Package.resolved`; CI
+  still runs the older Xcode.
+
+Packages can keep older Xcodes working with `Package@swift-5.10.swift`; most
+do not.
+
+This is not [spm-resolution] (cache, auth, network) and not
+[toolchains-override] (a swapped compiler): the manifest is fine, this Xcode
+is just too old to read it.
+
+**Fix**
+
+```bash
+xcrun swift --version          # the SwiftPM this Xcode really has
+# Which checked-out package asks for more?
+head -1 ~/Library/Developer/Xcode/DerivedData/*/SourcePackages/checkouts/*/Package.swift
+```
+
+Either move CI to the Xcode that matches the team, or pin the package to the
+last release with a supported tools version (`.upToNextMinor(from:)` or
+`exact:`) and keep `-onlyUsePackageVersionsFromResolvedFile` on CI.
+
+**Rule:** treat `Package.resolved` and the CI Xcode version as one unit — bump them in the same PR, never one alone.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
 
-1. `xcode-select -p` — right Xcode? → [wrong-developer-dir]; `echo $TOOLCHAINS` empty? → [toolchains-override]; `uname -m` says x86_64 on Apple silicon? → [rosetta-shell]
+1. `xcode-select -p` — right Xcode? → [wrong-developer-dir]; `echo $TOOLCHAINS` empty? → [toolchains-override]; `uname -m` says x86_64 on Apple silicon? → [rosetta-shell]; `xcrun swift --version` older than a package needs? → [swift-tools-version]
 2. `xcodebuild -list` — scheme actually exists and is shared? → [scheme-not-found]
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
