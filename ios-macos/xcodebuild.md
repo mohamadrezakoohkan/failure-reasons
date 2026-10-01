@@ -1980,6 +1980,47 @@ log show --last 5m --predicate 'subsystem == "com.apple.TCC"' | grep -i deny
 
 ---
 
+## [wwdr-chain-broken] Unable to build chain to self-signed root for signer
+
+**Symptom** — the identity is in the keychain and the keychain is unlocked,
+but signing still fails:
+
+```
+Warning: unable to build chain to self-signed root for signer "Apple Distribution: Acme (ABCDE12345)"
+/…/App.app: errSecInternalComponent
+Command CodeSign failed with a nonzero exit code
+```
+
+Keychain Access shows the certificate as "not trusted" or "issued by an
+unknown authority". Often on a new CI runner or a new Mac, or after someone
+changed trust settings by hand.
+
+**Cause** — `codesign` must build the chain leaf → Apple WWDR intermediate →
+Apple Root CA. Apple now issues certificates from several intermediates
+(WWDR G3–G6), and a fresh machine or a minimal CI keychain often has only an
+old one, or none. The chain breaks the same way if someone set the leaf,
+intermediate or root to *Always Trust*: custom trust settings make the
+chain invalid for code signing. This is not [keychain-locked]: the same
+`errSecInternalComponent` appears there, but without the "build chain"
+warning.
+
+**Fix** — see which intermediate signed the certificate, then install it:
+
+```bash
+security find-identity -v -p codesigning                       # identity listed, but "0 valid"?
+security find-certificate -c "Apple Distribution: Acme" -p | openssl x509 -noout -issuer
+curl -sO https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer   # match the issuer's Gn
+sudo security add-certificates -k /Library/Keychains/System.keychain AppleWWDRCAG3.cer
+```
+
+On CI, import the intermediate into the same keychain as the identity (or
+into System). In Keychain Access, set every Apple certificate in the chain
+back to *Use System Defaults*. Never set them to *Always Trust*.
+
+**Rule:** "build chain to self-signed root" means the Apple intermediate is missing or its trust was changed — install the issuer's WWDR certificate during machine setup, and leave trust settings at system defaults.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
