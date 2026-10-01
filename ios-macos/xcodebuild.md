@@ -2698,6 +2698,53 @@ transparency (e.g. `sips -s format jpeg icon.png --out i.jpg && sips -s format p
 
 ---
 
+## [framework-min-os] Upload rejected: ITMS-90208 / 90530 / 90360 framework MinimumOSVersion
+
+**Symptom** — the app builds, runs and archives; the upload fails on one
+embedded framework:
+
+```
+ERROR ITMS-90208: "Invalid Bundle. The bundle App.app/Frameworks/Vendor.framework
+does not support the minimum OS Version specified in the Info.plist."
+ERROR ITMS-90530: "Invalid MinimumOSVersion. ... MinimumOSVersion in
+'App.app/Frameworks/Vendor.framework' is ''."
+ERROR ITMS-90360: "Missing Info.plist value. A value for the key 'MinimumOSVersion'
+in bundle App.app/Frameworks/Vendor.framework is required."
+```
+
+**Cause** — every embedded `.framework` carries its own Info.plist, and the
+store checks its `MinimumOSVersion`: it must be present and no newer than the
+app's. Xcode fills it for frameworks it builds, but not for prebuilt binaries
+(vendor `.xcframework`s from SPM, Flutter's `App.framework`, React Native's
+`hermes.framework`) whose plist was written by hand or by a script — it ships
+empty, missing, or newer than the app's deployment target (the app was
+lowered, or the vendor raised its floor).
+
+This is not [deployment-target] (a target's own setting out of range) or
+[spm-platform-minimum] (caught at build time); here only the store reads the plist.
+
+**Fix**
+
+```bash
+# MinimumOSVersion of the app and of every embedded framework
+for p in App.xcarchive/Products/Applications/App.app/Info.plist \
+         App.xcarchive/Products/Applications/App.app/Frameworks/*.framework/Info.plist; do
+  echo "$p: $(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$p" 2>&1)"
+done
+```
+
+Update the dependency to a release that sets the key, or raise the app's
+deployment target to at least the framework's. For your own prebuilt framework
+(Flutter: `ios/Flutter/AppFrameworkInfo.plist`), set `MinimumOSVersion` to the
+app's target. Last resort for a vendor binary: a Run Script after Embed that
+runs `PlistBuddy -c "Set :MinimumOSVersion $IPHONEOS_DEPLOYMENT_TARGET"` (or
+`Add ... string`) on the embedded plist, then re-signs that framework with
+`codesign -f -s "$EXPANDED_CODE_SIGN_IDENTITY"`.
+
+**Rule:** every embedded framework must state a MinimumOSVersion no newer than the app's.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2707,7 +2754,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
