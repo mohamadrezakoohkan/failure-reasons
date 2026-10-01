@@ -2826,6 +2826,51 @@ module map to the consumer's `SWIFT_INCLUDE_PATHS`.
 
 ---
 
+## [ipad-orientations] Upload rejected: ITMS-90474 iPad Multitasking requires all orientations
+
+**Symptom** — the archive builds, exports and signs. The upload is refused:
+
+```
+ERROR ITMS-90474: "Invalid Bundle. iPad Multitasking support requires these
+orientations: 'UIInterfaceOrientationPortrait,UIInterfaceOrientationPortraitUpsideDown,
+UIInterfaceOrientationLandscapeLeft,UIInterfaceOrientationLandscapeRight'.
+Found 'UIInterfaceOrientationPortrait' in bundle 'com.example.app'."
+```
+
+**Cause** — the app runs on iPad (`TARGETED_DEVICE_FAMILY` has `2`), so App
+Store Connect assumes it supports Split View and Stage Manager. Those need all
+four orientations for iPad. Someone locked the app to portrait for iPhone, and
+the same list was used for iPad. Often a phone-only change to
+`INFOPLIST_KEY_UISupportedInterfaceOrientations` did it, with no `~ipad`
+variant set. ITMS-90475 is the same check failing on a missing launch
+storyboard.
+
+The old escape hatch was `UIRequiresFullScreen = YES`. It is deprecated in
+iPadOS 26, and Apple says a future release will ignore it (TN3192). Do not add
+it now.
+
+This is not [purpose-string-missing] or [app-icon-missing]. Those are missing
+keys. Here, the key is there, but its iPad value is too narrow.
+
+**Fix**
+
+```bash
+# What the built app actually declares, for iPhone and for iPad
+/usr/libexec/PlistBuddy -c 'Print :UISupportedInterfaceOrientations' \
+  -c 'Print :UISupportedInterfaceOrientations~ipad' \
+  -c 'Print :UIDeviceFamily' "$APP/Info.plist"
+```
+
+Set the iPad list on its own, and leave the iPhone list as it is:
+`INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = UIInterfaceOrientationPortrait
+UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft
+UIInterfaceOrientationLandscapeRight`. If the app truly cannot work on iPad,
+remove `2` from `TARGETED_DEVICE_FAMILY`. Then it runs as an iPhone app on iPad.
+
+**Rule:** an app that targets iPad must list all four orientations for iPad.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2835,7 +2880,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
