@@ -2530,6 +2530,51 @@ warning becomes a rejection.
 
 ---
 
+## [notarization-invalid] macOS: notarytool says Invalid, stapler fails
+
+**Symptom** — a Developer ID macOS build archives, exports and signs fine,
+then notarization rejects it and stapling fails:
+
+```
+Processing complete
+  status: Invalid
+...
+CloudKit query for App.app (2/...) failed due to "Record not found".
+The staple and validate action failed! Error 65.
+```
+
+**Cause** — the notary service checks every Mach-O inside the bundle, not
+only the app. Notarization needs the hardened runtime, a Developer ID
+Application certificate, a secure timestamp, and no
+`com.apple.security.get-task-allow` entitlement. Usually one of these is
+missing: a Debug build was exported, `ENABLE_HARDENED_RUNTIME` is off, or a
+nested helper, framework or CLI tool was copied in after signing or signed
+with `--timestamp=none`. Stapler error 65 just means there is no accepted
+ticket to staple — fix notarization first.
+
+This is not [timestamp-unavailable] (signing itself fails) and not
+[export-archive] (nothing is exported).
+
+**Fix**
+
+```bash
+# The real reasons are in the log, not in "Invalid"
+xcrun notarytool log <submission-id> --keychain-profile notary
+# Check each binary: flags must include "runtime", authority "Developer ID Application"
+codesign -dvv --verbose=4 App.app/Contents/MacOS/App
+codesign -d --entitlements - App.app | grep get-task-allow
+```
+
+Set `ENABLE_HARDENED_RUNTIME = YES` on every target, archive the Release
+configuration, and export with `method` = `developer-id`. Sign anything you
+add by hand inside-out with `codesign --force --options runtime --timestamp`.
+Then submit again with `notarytool submit --wait` and run
+`xcrun stapler staple App.app`.
+
+**Rule:** when notarization says Invalid, read `notarytool log` first — each issue names one binary path; fix that binary, not the whole app.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2539,7 +2584,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
