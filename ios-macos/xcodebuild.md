@@ -2151,6 +2151,48 @@ instead.
 
 ---
 
+## [timestamp-unavailable] codesign fails: The timestamp service is not available
+
+**Symptom** — compiling and linking pass, then the signing step fails. It
+happens most with archives, Developer ID builds and macOS apps, and often on
+CI runners with locked-down network access:
+
+```
+…/MyApp.app: The timestamp service is not available.
+Command CodeSign failed with a nonzero exit code
+```
+
+It can pass on a rerun without any change.
+
+**Cause** — signing for distribution adds a secure timestamp
+(`codesign --timestamp`). To do that, `codesign` must reach Apple's
+timestamp server, `timestamp.apple.com`, over the network. The step fails
+when the machine is offline, when a firewall or proxy blocks that host
+(`codesign` does not read `HTTP_PROXY`), when IPv6 to the host is broken,
+or when Apple's server is briefly down.
+
+This is not [keychain-locked] (the key was found and used) and not
+[wwdr-chain-broken] (the certificate chain is fine). It is only the network
+call for the timestamp.
+
+**Fix** — check that the host is reachable from the machine that builds:
+
+```bash
+curl -sI http://timestamp.apple.com/ts01 | head -1   # any HTTP reply = reachable
+```
+
+- On CI, allow `timestamp.apple.com` through the firewall. If IPv6 is the
+  problem, force IPv4 for that host.
+- If Apple's server is down, wait a few minutes and retry. A CI script can
+  retry the sign step 2–3 times.
+- For local or debug builds only, you can skip the timestamp with
+  `OTHER_CODE_SIGN_FLAGS="--timestamp=none"`. Never do this for a build you
+  ship: notarization rejects code with no secure timestamp.
+
+**Rule:** "timestamp service is not available" is a network problem — check that `timestamp.apple.com` is reachable and retry; use `--timestamp=none` only for builds you never ship.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
