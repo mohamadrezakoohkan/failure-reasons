@@ -2193,6 +2193,48 @@ curl -sI http://timestamp.apple.com/ts01 | head -1   # any HTTP reply = reachabl
 
 ---
 
+## [pipe-masks-exit] CI is green, but the build failed
+
+**Symptom** — the log shows `** BUILD FAILED **` or `** TEST FAILED **`,
+but the CI step passes and the next steps run with no app or no results.
+Or the opposite: the build passes and the step fails with a Ruby error from
+the formatter:
+
+```
+** BUILD FAILED **
+… step finished, exit code 0
+
+xcpretty: invalid byte sequence in US-ASCII (ArgumentError)
+```
+
+**Cause** — a shell pipeline returns the exit code of its *last* command.
+In `xcodebuild … | tee build.log | xcpretty`, that is `xcpretty`, which
+exits 0 after printing the failure. `set -e` does not help, because it only
+checks that same last code. GitHub Actions adds `-o pipefail` only when the
+step says `shell: bash`; the default `bash -e {0}` does not. The Ruby error
+is a separate bug: `xcpretty` crashes on non-ASCII log text (emoji, accented
+paths) when the runner has no UTF-8 locale.
+
+This is not a real build error. Read the raw log
+(see "Before anything else") to find the real one.
+
+**Fix** — make the pipeline fail when `xcodebuild` fails:
+
+```bash
+set -o pipefail
+export LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8   # stops the xcpretty crash
+xcodebuild … 2>&1 | tee build.log | xcbeautify
+```
+
+- On GitHub Actions, set `shell: bash` on the step, or add `set -o pipefail`
+  at the top of the script.
+- To keep the pipe and still check the code: `${PIPESTATUS[0]}` in bash,
+  `$pipestatus[1]` in zsh.
+
+**Rule:** every `xcodebuild | formatter` line needs `set -o pipefail`; a green step with `BUILD FAILED` in the log is the pipe, not the build.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2202,7 +2244,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error.
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
