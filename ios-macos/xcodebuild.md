@@ -2406,6 +2406,45 @@ version instead of re-tagging; if they will not, pin by `revision:`.
 
 ---
 
+## [xcresulttool-legacy] Tests pass, then the report step fails: --legacy flag is required
+
+**Symptom** — the build and tests succeed after an Xcode 16 upgrade, but the
+step that reads the result bundle fails (or posts an empty report):
+
+```
+Error: This command is deprecated and will be removed in a future release,
+--legacy flag is required to use it.
+Usage: xcresulttool get object [--legacy] --path <path> ...
+```
+
+**Cause** — Xcode 16 deprecated the old `xcresulttool get --format json`
+object graph and `export` form. They now refuse to run without `--legacy`.
+Your own scripts and older report tools (fastlane `trainer`, Danger plugins,
+`xcparse`, test-report actions) call the old form, so the step after the tests
+breaks, not `xcodebuild`.
+
+This is not [result-bundle-exists] (writing the bundle) and not
+[pipe-masks-exit] (here the report step exits non-zero; the tests were fine).
+
+**Fix**
+
+```bash
+# Unblock today: keep the old command, add the flag
+xcrun xcresulttool get --legacy --format json --path Build.xcresult
+# Move to the supported commands
+xcrun xcresulttool get test-results summary --path Build.xcresult
+xcrun xcresulttool get test-results tests   --path Build.xcresult
+xcrun xcresulttool get build-results        --path Build.xcresult
+```
+
+Bump report tools to a version that supports Xcode 16 before adding
+`--legacy` by hand. The flag is a stopgap — Apple says the old form will be
+removed.
+
+**Rule:** when a CI report step breaks after an Xcode upgrade, check the result-bundle reader first — move to `get test-results`, and use `--legacy` only as a stopgap.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2415,7 +2454,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
