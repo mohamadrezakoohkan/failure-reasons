@@ -2575,6 +2575,50 @@ Then submit again with `notarytool submit --wait` and run
 
 ---
 
+## [purpose-string-missing] Upload rejected: ITMS-90683 Missing purpose string
+
+**Symptom** — archive, export and upload succeed; App Store Connect then
+emails that the build is invalid:
+
+```
+ITMS-90683: Missing purpose string in Info.plist - Your app's code references
+one or more APIs that access sensitive user data, or the app has one or more
+entitlements that permit such access. The Info.plist file for the "App.app"
+bundle should contain a NSCameraUsageDescription key …
+```
+
+**Cause** — Apple scans the linked symbols, not what your app actually calls.
+An SDK that links camera, photos, location, contacts or Bluetooth APIs (WebRTC,
+a payments or support SDK) is enough, even if that code never runs. The other
+common case: the string exists only in `InfoPlist.strings` — that file only
+translates a key; the key must also be in the bundle's own Info.plist. With
+`GENERATE_INFOPLIST_FILE = YES`, the key comes from an
+`INFOPLIST_KEY_NS…UsageDescription` build setting, which may be set only for
+Debug.
+
+This is not [privacy-manifest] (required-reason APIs in
+`PrivacyInfo.xcprivacy`; here it is a `NS…UsageDescription` key) and not
+[infoplist-missing] (no Info.plist at all).
+
+**Fix**
+
+```bash
+# Which purpose strings actually shipped?
+plutil -p App.xcarchive/Products/Applications/App.app/Info.plist | grep UsageDescription
+# Which embedded binary links the camera / photos API?
+nm -u App.app/Frameworks/*.framework/* 2>/dev/null | grep -E 'AVCaptureDevice|PHPhotoLibrary'
+```
+
+Add the key named in the email to the app target's Info.plist (or
+`INFOPLIST_KEY_…` for every configuration) with a real sentence, not a
+placeholder. Do the same for extensions that embed the SDK. A string is
+fine even if the feature is never used; dropping the SDK is the only way to
+avoid it.
+
+**Rule:** a purpose string is required for what the binary *links*, not what it calls — check the archived Info.plist for every key ITMS-90683 names.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2584,7 +2628,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
