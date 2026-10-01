@@ -2235,11 +2235,54 @@ xcodebuild … 2>&1 | tee build.log | xcbeautify
 
 ---
 
+## [rosetta-shell] Simulator build picks x86_64 on an Apple silicon Mac
+
+**Symptom** — the same command builds in Xcode but fails from a terminal or
+CI agent. The build targets `x86_64` even though the Mac is Apple silicon:
+
+```
+error: Could not find module 'Foo' for target 'x86_64-apple-ios-simulator';
+found: arm64-apple-ios-simulator
+ld: building for 'iOS-simulator', but linking in object file built for … arm64
+```
+
+`-showdestinations` lists simulators with `arch:x86_64`.
+
+**Cause** — the shell that ran `xcodebuild` is running under Rosetta, so
+`xcodebuild` runs as an x86_64 process. With `ONLY_ACTIVE_ARCH=YES` the
+"active" arch is now `x86_64`. Prebuilt modules and XCFrameworks that ship
+only an `arm64` simulator slice then do not match. Common sources: a
+Terminal app set to "Open using Rosetta", an x86_64 Homebrew in `/usr/local`
+whose `bash`/`ruby` starts the build, or an x86_64 Java for the CI agent
+(Jenkins, TeamCity).
+
+This is not [simulator-arch] (that is a device build linked into a simulator
+app). Here the build is a simulator build for the wrong CPU.
+
+**Fix** — check, then run the build natively:
+
+```bash
+sysctl -n sysctl.proc_translated   # 1 = this shell is under Rosetta
+uname -m                           # x86_64 here on Apple silicon = Rosetta
+arch -arm64 xcodebuild …           # one-off native run
+```
+
+- Turn off "Open using Rosetta" for Terminal/iTerm; install arm64 Homebrew
+  in `/opt/homebrew`; use an arm64 JDK for the CI agent.
+- To force the arch, pin it in the destination:
+  `-destination 'platform=iOS Simulator,name=iPhone 16,arch=arm64'`.
+- Do not "fix" it by adding `EXCLUDED_ARCHS[sdk=iphonesimulator*]=arm64`;
+  that hides the problem and breaks native builds.
+
+**Rule:** a simulator build that targets `x86_64` on Apple silicon means the shell is under Rosetta — check `sysctl.proc_translated`, then run `arch -arm64`.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
 
-1. `xcode-select -p` — right Xcode? → [wrong-developer-dir]; `echo $TOOLCHAINS` empty? → [toolchains-override]
+1. `xcode-select -p` — right Xcode? → [wrong-developer-dir]; `echo $TOOLCHAINS` empty? → [toolchains-override]; `uname -m` says x86_64 on Apple silicon? → [rosetta-shell]
 2. `xcodebuild -list` — scheme actually exists and is shared? → [scheme-not-found]
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
