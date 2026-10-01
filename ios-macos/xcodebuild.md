@@ -2619,6 +2619,44 @@ avoid it.
 
 ---
 
+## [nested-frameworks] Upload rejected: ITMS-90205 / 90206 Frameworks inside an extension
+
+**Symptom** — archive and export succeed; the upload (or validation) fails:
+
+```
+ERROR ITMS-90205: "Invalid Bundle. The bundle at 'App.app/PlugIns/Widget.appex'
+contains disallowed nested bundles."
+ERROR ITMS-90206: "Invalid Bundle. The bundle at 'App.app/PlugIns/Widget.appex'
+contains disallowed file 'Frameworks'."
+```
+
+**Cause** — on iOS only the app's own `Frameworks/` folder may hold
+frameworks; an `.appex` or a framework must not carry its own. Usual sources:
+the extension (or a framework) has a dependency set to **Embed & Sign**, a
+CocoaPods/Carthage copy-frameworks script runs on the extension target, or
+`ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES` on the extension copies Swift
+libs into it. The debug build runs fine — only the store checks this.
+
+This is not [embedded-binary-mismatch] (bundle ID / signing of an embedded
+binary); here the binary is just in the wrong place.
+
+**Fix**
+
+```bash
+# Which bundles carry their own Frameworks folder?
+find App.xcarchive/Products/Applications/App.app -path '*/PlugIns/*/Frameworks' -o -path '*.framework/Frameworks'
+```
+
+Set those dependencies to **Do Not Embed** in the extension and framework
+targets, embed them once in the app target, and set
+`ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = NO` on every target except the app.
+The extension still links them and finds them via
+`@executable_path/../../Frameworks` in `LD_RUNPATH_SEARCH_PATHS`.
+
+**Rule:** only the app embeds frameworks — extensions and frameworks link, never embed.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2628,7 +2666,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
