@@ -2021,6 +2021,46 @@ back to *Use System Defaults*. Never set them to *Always Trust*.
 
 ---
 
+## [too-many-open-files] Random files fail to open: Too many open files
+
+**Symptom** — a large build fails at a different file on every run, usually
+on a CI runner or after adding many packages:
+
+```
+error: unable to open output file '/…/Foo.o': 'Too many open files'
+fatal error: error opening input file '/…/Bar.swift' (Too many open files)
+error: accessing build database: disk I/O error
+```
+
+A clean retry, or a build with fewer packages, gets further and then fails
+somewhere else.
+
+**Cause** — the per-process limit on open file descriptors. macOS gives
+shells a soft limit of 256 (`ulimit -n`), and launchd jobs inherit
+`launchctl limit maxfiles`, which is also low by default. With parallel
+jobs, many SPM modules, module caches and the build database all open at
+once, the build passes that limit. The disk and the files are fine. This is
+not [disk-space], and not [db-locked]: the database error is only one more
+open that failed.
+
+**Fix** — check the limit in the context that runs the build, then raise
+it there:
+
+```bash
+ulimit -n; launchctl limit maxfiles      # 256 here is the problem
+ulimit -n 65536 && xcodebuild ...         # this shell and its children only
+sudo launchctl limit maxfiles 65536 524288   # whole system, until reboot
+```
+
+To keep it after a reboot, add a LaunchDaemon in `/Library/LaunchDaemons`
+that runs `launchctl limit maxfiles 65536 524288` at load. Restart the CI
+runner service afterwards, because a running job keeps its old limit. As a
+stopgap, `-jobs 4` opens fewer files at once.
+
+**Rule:** "Too many open files" is a limit, not a broken file — raise `ulimit -n` in the CI runner's start script and never debug the file the error names.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2028,7 +2068,7 @@ Work down this list before deep-diving a log:
 1. `xcode-select -p` — right Xcode? → [wrong-developer-dir]; `echo $TOOLCHAINS` empty? → [toolchains-override]
 2. `xcodebuild -list` — scheme actually exists and is shared? → [scheme-not-found]
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
-4. `df -h` — disk not full? → [disk-space]
+4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]
 6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error.
 
