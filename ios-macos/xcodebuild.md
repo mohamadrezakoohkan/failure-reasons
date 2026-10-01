@@ -2657,6 +2657,47 @@ The extension still links them and finds them via
 
 ---
 
+## [app-icon-missing] Upload rejected: ITMS-90713 / 90022 / 90717 app icon
+
+**Symptom** — the app runs (maybe with a blank icon); the upload fails:
+
+```
+ERROR ITMS-90713: "Missing Info.plist value. A value for the Info.plist key
+'CFBundleIconName' is missing in the bundle 'com.example.app'."
+ERROR ITMS-90022: "Missing required icon file. The bundle does not contain an
+app icon for iPhone / iPod Touch of exactly '120x120' pixels."
+ERROR ITMS-90717: "Invalid App Store Icon. The App Store Icon in the asset
+catalog in 'App.app' can't be transparent nor contain an alpha channel."
+```
+
+**Cause** — `actool` only writes `CFBundleIcons`/`CFBundleIconName` into the
+built Info.plist when `ASSETCATALOG_COMPILER_APPICON_NAME` names an icon set
+that exists in a catalog the target actually compiles. It goes silent when the
+setting is empty (new target, Release-only override), the set was renamed
+(`AppIcon` → `AppIcon-Prod`), the `.xcassets` is missing from Copy Bundle
+Resources, or a hand-written `CFBundleIcons` in the source Info.plist hides
+it. 90717 is different: the 1024 pt marketing icon has an alpha channel.
+
+**Fix**
+
+```bash
+# Did the icon keys reach the built app?
+plutil -p App.xcarchive/Products/Applications/App.app/Info.plist | grep -A4 CFBundleIcon
+# Which icon name does each configuration ask for?
+xcodebuild -showBuildSettings -scheme App -configuration Release | grep APPICON_NAME
+# Does the 1024 icon carry alpha?
+sips -g hasAlpha App/Assets.xcassets/AppIcon.appiconset/*.png
+```
+
+Set `ASSETCATALOG_COMPILER_APPICON_NAME` to the exact set name for every
+configuration, add the catalog to the target, and delete any manual
+`CFBundleIcons` keys. Flatten an alpha icon by exporting it without
+transparency (e.g. `sips -s format jpeg icon.png --out i.jpg && sips -s format png i.jpg --out icon.png`).
+
+**Rule:** the icon set name in build settings must match the catalog, in every configuration.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2666,7 +2707,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
