@@ -3449,6 +3449,55 @@ runners that never run the release lane.
 
 ---
 
+## [swift6-language-mode] Concurrency warnings became errors: risks causing data races
+
+**Symptom** — code that built yesterday now fails, with no change to the code
+itself. Often it happens after a package update or a `swift-tools-version` bump:
+
+```
+error: sending 'value' risks causing data races
+error: static property 'shared' is not concurrency-safe because it is
+  nonisolated global shared mutable state
+error: main actor-isolated property 'x' can not be referenced from a
+  nonisolated context
+```
+
+**Cause** — the target now compiles in **Swift 6 language mode**, where data-race
+checks are errors, not warnings. Same compiler, different mode. Usual triggers:
+
+- a package moved to `// swift-tools-version:6.0`. Every target in it now
+  defaults to Swift 6 mode — your local package, or a dependency you bumped;
+- `SWIFT_VERSION` changed from `5.0` to `6.0` in a target or xcconfig;
+- `SWIFT_STRICT_CONCURRENCY = complete` together with
+  `SWIFT_TREAT_WARNINGS_AS_ERRORS` (or `-warnings-as-errors`) on CI only;
+- a new target from an Xcode 26 template comes with
+  `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`. Old code moved into it changes
+  isolation.
+
+This is not [swift-version-unsupported]. That error happens before compiling.
+This one is real diagnostics in your source. Wiping DerivedData does nothing.
+
+**Fix**
+
+```bash
+# Which mode did each failing target really compile in?
+grep -oE -- '-swift-version [0-9]+|-strict-concurrency=[a-z]+|-default-isolation[= ][A-Za-z]+' build.log | sort | uniq -c
+# Which packages ask for tools 6?
+grep -l 'swift-tools-version: *6' Package.swift */Package.swift \
+  SourcePackages/checkouts/*/Package.swift 2>/dev/null
+```
+
+To unblock, pin the mode instead of hiding the diagnostics. In a package:
+`swiftLanguageModes: [.v5]`, or `.swiftLanguageMode(.v5)` on a single target.
+In Xcode: `SWIFT_VERSION = 5.0` plus `SWIFT_STRICT_CONCURRENCY = targeted`.
+Then move to Swift 6 one module at a time, leaves first. For a dependency you
+don't own, pin the last release that still builds, and report the issue.
+
+**Rule:** the language mode is a build setting — set it on purpose for each
+target. Don't let a tools-version bump or a template default change it for you.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3458,7 +3507,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
