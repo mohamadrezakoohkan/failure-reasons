@@ -3753,6 +3753,51 @@ give it the certificate and profile and turn cloud signing off.
 
 ---
 
+## [pla-not-accepted] Signing or upload fails: PLA Update available
+
+**Symptom** — the code is the same as yesterday's green run. Now every step
+that talks to Apple fails at once: `-allowProvisioningUpdates` builds, export,
+and upload, on every runner and every laptop on the team:
+
+```
+error: exportArchive: Unable to process request - PLA Update available
+  You currently don't have access to this membership resource. To resolve
+  this issue, agree to the latest Program License Agreement in your
+  developer account.
+```
+
+API-key uploads show the same thing as `403 FORBIDDEN.REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED`.
+
+**Cause** — Apple published a new Program License Agreement. Until the team's
+**Account Holder** accepts it, the developer portal blocks the whole team:
+no new profiles or certificates, no cloud signing, no uploads. Builds that
+need no network (installed cert, manual signing, no upload) still work, so the
+failure often appears only in the release job. Admins cannot accept the PLA,
+and API keys cannot either. Only the Account Holder can.
+
+This is not [license-first-launch] (the Xcode licence on the Mac) and not
+[cloud-signing-permission] (one account's role). Here the account is fine, but
+the whole team is blocked.
+
+**Fix**
+
+```bash
+# Confirm: does the App Store Connect API refuse because of an agreement?
+curl -s -H "Authorization: Bearer $ASC_JWT" \
+  https://api.appstoreconnect.apple.com/v1/apps?limit=1 | grep -o '"code" *: *"[^"]*"'
+# → "FORBIDDEN.REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED" means: go accept it
+```
+
+The Account Holder signs in at developer.apple.com → Account and accepts the
+banner. They also check App Store Connect → Business (Agreements) for an
+expired Paid Apps agreement. Wait a few minutes, then re-run the job. Do not
+change the code or the signing settings.
+
+**Rule:** if every Apple-facing step fails at once with nothing changed, read
+the first line for "PLA". The fix belongs to the Account Holder, not to CI.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3762,7 +3807,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]; "PLA Update available" or "REQUIRED_AGREEMENTS_MISSING"? → [pla-not-accepted]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
