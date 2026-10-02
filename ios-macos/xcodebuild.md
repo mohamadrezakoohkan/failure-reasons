@@ -3699,6 +3699,60 @@ both when the runner is built, not when the test fails.
 
 ---
 
+## [cloud-signing-permission] Export fails: no access to cloud-managed distribution certificates
+
+**Symptom** — the archive succeeds. `-exportArchive` with
+`-allowProvisioningUpdates` then stops:
+
+```
+error: exportArchive: Cloud signing permission error
+  You haven't been given access to cloud-managed distribution certificates.
+  Please contact your team's Account Holder or an Admin.
+```
+
+It exports fine from an Admin's Xcode, and fails on CI.
+
+**Cause** — automatic signing at export does not use a certificate on the
+runner. It asks Apple to sign with a cloud-managed distribution certificate,
+and only some accounts may do that:
+
+- the App Store Connect API key passed with `-authenticationKeyPath` has the
+  Developer or App Manager role; cloud distribution signing needs an Admin key;
+- the Apple ID signed into the runner's Xcode is not an Admin and was never
+  given "Access to Cloud Managed Distribution Certificate";
+- the export method is `developer-id`: Apple does not cloud-sign Developer ID,
+  even with an Admin key.
+
+This is not [export-archive] (bad options plist) and not [codesign-no-profile]
+(nothing installed). Here Xcode can reach Apple, but the account may not sign.
+
+**Fix**
+
+```bash
+# Which key and signing style does the export use?
+/usr/libexec/PlistBuddy -c Print ExportOptions.plist
+# Option A: an Admin API key (App Store / TestFlight only)
+xcodebuild -exportArchive -archivePath App.xcarchive -exportPath ./export \
+  -exportOptionsPlist ExportOptions.plist -allowProvisioningUpdates \
+  -authenticationKeyPath "$KEY_PATH" -authenticationKeyID "$KEY_ID" \
+  -authenticationKeyIssuerID "$ISSUER_ID"
+# Option B: no cloud at all — installed cert + profile, manual signing
+#   ExportOptions.plist: signingStyle=manual, signingCertificate,
+#   provisioningProfiles = { bundle ID : profile name }
+xcodebuild -exportArchive -archivePath App.xcarchive -exportPath ./export \
+  -exportOptionsPlist ExportOptions.plist
+```
+
+For a person, an Admin turns on "Access to Cloud Managed Distribution
+Certificate" in App Store Connect → Users and Access. For Developer ID, always
+use option B. An Admin key can do anything on the team: keep it in the CI
+secret store, scoped to the release job.
+
+**Rule:** cloud signing is a permission, not a file. Give CI an Admin key, or
+give it the certificate and profile and turn cloud signing off.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3708,7 +3762,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
