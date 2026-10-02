@@ -3215,6 +3215,53 @@ strings, and grep new SDK versions for the flagged names before you ship them.
 
 ---
 
+## [version-string-format] Upload rejected: ITMS-90060 / 90058 version must be integers
+
+**Symptom** — the archive builds and exports. The upload is refused:
+
+```
+ERROR ITMS-90060: "This bundle is invalid. The value for key
+  CFBundleShortVersionString '3.0.0-beta.1' in the Info.plist file must be a
+  period-separated list of at most three non-negative integers."
+ERROR ITMS-90058: "This bundle is invalid. The value for key CFBundleVersion
+  '412-dev' in the Info.plist file must be a period-separated list of at most
+  three non-negative integers."
+```
+
+**Cause** — App Store Connect accepts only `1`, `1.2` or `1.2.3` in these keys:
+no letters, no `-beta`, no fourth part. Apple checks every bundle, not just the
+app. So the bad value is often not yours:
+
+- an embedded framework (Pod, Carthage, binary SPM) ships its own Info.plist
+  with a pre-release version like `3.0.0-beta.1`;
+- a CI step writes a branch name, a git hash or `git describe` output into
+  `MARKETING_VERSION` or `CURRENT_PROJECT_VERSION`;
+- a fourth part (`1.2.3.4`) was added for internal builds.
+
+This is not [build-number-reused] (the number is valid but already used or too
+low). This one is about the format.
+
+**Fix**
+
+```bash
+# Every version in the app, the bad ones only
+find Payload/App.app -name Info.plist | while read f; do
+  for k in CFBundleShortVersionString CFBundleVersion; do
+    v=$(/usr/libexec/PlistBuddy -c "Print :$k" "$f" 2>/dev/null) || continue
+    echo "$v" | grep -qE '^[0-9]+(\.[0-9]+){0,2}$' || echo "$f $k=$v"
+  done
+done
+```
+
+Your own target: pass clean numbers at archive time and keep tags or hashes in
+a custom key. Vendor framework: move to a final release, or ask the vendor —
+a pre-release build cannot go to the store.
+
+**Rule:** version keys are up to three integers in every bundle — check the
+built app with the loop above before you upload.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3224,7 +3271,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
