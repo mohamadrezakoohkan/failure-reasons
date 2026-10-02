@@ -3938,6 +3938,61 @@ Development and Ad Hoc profile that should include it.
 
 ---
 
+## [coverage-not-collected] Tests pass but there is no coverage: No profiles could be merged
+
+**Symptom** — the tests are green, then the coverage step fails or reports
+nothing:
+
+```
+warning: .../Build/ProfileData/<UUID>/<id>.profraw: Invalid instrumentation
+  profile data (file header is corrupt)
+error: No profiles could be merged.
+```
+
+Or `xcrun xccov view --report Test.xcresult` says the bundle has no coverage
+data, or the report is empty / 0%, and Codecov or Sonar rejects the upload.
+
+**Cause** — coverage is made in two halves: the compiler instruments the
+binary at **build** time, and the test run writes `.profraw` files that
+`llvm-profdata` then merges. Usual ways one half goes missing:
+
+- `-enableCodeCoverage YES` was passed to `test-without-building` but not to
+  `build-for-testing`, so the binaries were never instrumented;
+- the test plan or scheme has coverage off, or limits it to targets that
+  were renamed;
+- a test process crashed or was killed mid-run, leaving a truncated
+  `.profraw` ("file header is corrupt");
+- the binaries came from another toolchain than the `llvm-profdata` doing the
+  merge (prebuilt instrumented frameworks, a `TOOLCHAINS` override, or an
+  Xcode bug, as in 26.1): "raw profile version mismatch".
+
+This is not [only-testing-no-match] (no tests ran) or [xcresulttool-legacy]
+(the report tool's flags changed). Here tests ran; only the coverage is
+missing.
+
+**Fix**
+
+```bash
+# Is coverage in the result bundle at all?
+xcrun xccov view --report --only-targets Test.xcresult
+# Build and test both need the flag
+xcodebuild build-for-testing ... -enableCodeCoverage YES
+xcodebuild test-without-building ... -enableCodeCoverage YES -resultBundlePath Test.xcresult
+# Which raw profile is bad, and why?
+for f in DerivedData/Build/ProfileData/*/*.profraw; do
+  xcrun llvm-profdata show "$f" >/dev/null || echo "BAD: $f"
+done
+```
+
+"Corrupt header": find the test that crashed and fix that first. "Version
+mismatch": rebuild every instrumented binary with the selected Xcode, and
+unset `TOOLCHAINS`.
+
+**Rule:** coverage starts at compile time — pass the flag to the build, not
+just to the test run, and fail CI when the report has no targets.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3947,7 +4002,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]; "PLA Update available" or "REQUIRED_AGREEMENTS_MISSING"? → [pla-not-accepted]; green tests but "Executed 0 tests"? → [only-testing-no-match]; "checksum of downloaded artifact of binary target"? → [binary-target-checksum]; device install says "0xe8008015"? → [device-not-in-profile]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]; "PLA Update available" or "REQUIRED_AGREEMENTS_MISSING"? → [pla-not-accepted]; green tests but "Executed 0 tests"? → [only-testing-no-match]; "checksum of downloaded artifact of binary target"? → [binary-target-checksum]; device install says "0xe8008015"? → [device-not-in-profile]; green tests but "No profiles could be merged" or empty coverage? → [coverage-not-collected]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
