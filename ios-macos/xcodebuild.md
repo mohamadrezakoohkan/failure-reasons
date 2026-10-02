@@ -3062,6 +3062,60 @@ it, move that part to a target that does not import XCTest.
 
 ---
 
+## [sdk-signature-missing] Upload rejected: ITMS-91065 Missing signature
+
+**Symptom** — the archive and upload succeed. Then App Store Connect sends:
+
+```
+ITMS-91065: Missing signature - Your app includes "Frameworks/Vendor.framework/Vendor",
+which includes Alamofire, an SDK that was identified in the documentation as a
+commonly used third-party SDK. If a new app includes a commonly used third-party
+SDK, or an app update adds a new commonly used third-party SDK, the SDK must
+include a signature file.
+```
+
+Often it shows up only after a dependency bump, or on one app but not a sibling
+app that ships the same framework.
+
+**Cause** — Apple keeps a list of commonly used SDKs (Alamofire, SDWebImage,
+OpenSSL/BoringSSL, Firebase, OneSignal…). Since February 2025, a *binary* copy
+of one of them must carry the vendor's signature. Usual triggers:
+
+- the vendor ships an unsigned `.xcframework`;
+- only the xcframework wrapper is signed, while its slices are unsigned or
+  ad-hoc;
+- you rebuilt or re-wrapped the binary yourself (lipo, a custom script, a
+  CocoaPods `vendored_frameworks` repack). That removes the vendor's signature;
+- an unsigned framework of yours links a listed SDK statically, so the SDK
+  is hidden inside a binary with no signature.
+
+Code built from source (plain SwiftPM / CocoaPods source pods) is not affected.
+The check only applies the first time the SDK is added to an app, which explains
+why one app passes and another fails.
+
+This is not [embedded-binary-mismatch]. That one is your own re-signing at
+export. Here, the SDK's *vendor* signature is missing.
+
+**Fix**
+
+```bash
+# Is the xcframework signed, by whom, with a timestamp?
+codesign -dvv Vendor.xcframework 2>&1 | grep -E "Authority|Timestamp|not signed"
+# Which embedded binary hides the listed SDK?
+nm -gU Payload/App.app/Frameworks/Vendor.framework/Vendor | grep -i alamofire | head
+```
+
+Upgrade to a signed vendor release, or switch the SDK to a source dependency.
+If you control the framework, sign it with an Apple Distribution or Developer ID
+certificate and a secure timestamp
+(`codesign --timestamp -s "Apple Distribution: …" Vendor.xcframework`).
+If you cannot get a signed build, stop linking that SDK statically.
+
+**Rule:** a listed SDK ships as source or as a vendor-signed xcframework. Never
+re-wrap a vendor binary.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3071,7 +3125,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
