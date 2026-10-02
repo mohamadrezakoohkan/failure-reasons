@@ -2965,6 +2965,53 @@ exact Xcode that builds it.
 
 ---
 
+## [bundle-id-collision] Upload rejected: ITMS-90685 CFBundleIdentifier Collision
+
+**Symptom** — archive and export succeed. The upload (or Validate App) fails:
+
+```
+ERROR ITMS-90685: "CFBundleIdentifier Collision. There is more than one bundle
+with the CFBundleIdentifier value 'com.vendor.SDK' under the iOS application 'App.app'."
+```
+
+**Cause** — every bundle inside the `.app` (each `.framework`, `.appex`,
+`.bundle`, and the app itself) must have its own `CFBundleIdentifier`. Two of
+them share one. Usual sources:
+
+- the same framework is copied twice: embedded by the app *and* by a framework
+  or extension, or added once by hand and once by CocoaPods/SPM;
+- a vendored SDK ships a framework and a resource `.bundle` whose `Info.plist`
+  hardcodes the same ID;
+- a framework or extension `Info.plist` has a literal ID, not
+  `$(PRODUCT_BUNDLE_IDENTIFIER)`, copied from another target or from the app.
+
+Simulator and debug builds run fine. Only the store checks this.
+
+This is not [nested-frameworks]. That one is about *where* a framework sits.
+This one is about two bundles, anywhere, with *the same name*. A framework
+embedded twice can trigger both.
+
+**Fix**
+
+```bash
+# Every bundle ID in the archive, duplicates only
+find App.xcarchive/Products/Applications/App.app -name Info.plist -exec \
+  /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" {} \; 2>/dev/null | sort | uniq -d
+# Where does that ID live?
+grep -rl --include=Info.plist "com.vendor.SDK" App.xcarchive/Products/Applications/App.app
+```
+
+If one framework appears twice, embed it only in the app target and set it
+to **Do Not Embed** everywhere else. If two different bundles carry the ID,
+set `CFBundleIdentifier` to `$(PRODUCT_BUNDLE_IDENTIFIER)` and give each
+target a unique value. For a vendor `.bundle` you cannot rebuild, update the
+SDK or report it to the vendor. Do not patch the plist after signing.
+
+**Rule:** one bundle ID per bundle — check the archive with `uniq -d` before
+you upload.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2974,7 +3021,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
