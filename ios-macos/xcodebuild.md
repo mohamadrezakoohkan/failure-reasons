@@ -3164,6 +3164,57 @@ archive before you upload.
 
 ---
 
+## [non-public-api] Upload rejected: ITMS-90338 Non-public API usage
+
+**Symptom** — the archive builds, validates locally and runs. After upload, App
+Store Connect sends:
+
+```
+ITMS-90338: Non-public API usage - The app references non-public selectors
+in App: _setBackgroundColor:, initWithURLStrings:. If method names in your
+source code match the private Apple APIs listed above, altering your method
+names will help prevent this app from being flagged in future submissions.
+```
+
+Variants of the same check say "contains or inherits from non-public classes"
+or "links to non-public libraries".
+
+**Cause** — Apple scans the strings in every Mach-O file for selector, class and
+library names that match its private API list. It does not know who owns the
+method. So it fires on:
+
+- your own Objective-C method (or `@objc` Swift method) that happens to share a
+  name with a private one;
+- a vendor static library or framework that really calls a private API (or has
+  a matching name), often after an SDK update;
+- `NSSelectorFromString` / `perform(_:)` / KVC on a private key, which leaves the
+  name as a plain string.
+
+The line after "in" names the binary — `App` means the main executable, which
+also holds every static library linked into it.
+
+This is not [privacy-manifest] (missing reasons for *public* APIs) or
+[sdk-signature-missing]. This one is about names on the private list.
+
+**Fix**
+
+```bash
+# Which binary in the app carries the flagged name?
+find Payload/App.app -type f -exec file {} + | grep Mach-O | cut -d: -f1 \
+  | while read f; do strings - "$f" | grep -q 'initWithURLStrings:' && echo "$f"; done
+# Main executable: which linked .a / .o brought it in?
+grep -rl 'initWithURLStrings' Pods/ Carthage/ ~/Library/Developer/Xcode/DerivedData/*/SourcePackages 2>/dev/null
+```
+
+Your code: rename the method (add a prefix) and drop any string-built selector.
+Vendor code: update to a release that fixed it, or ask the vendor — do not patch
+their binary. Upload again; the check runs on every build.
+
+**Rule:** prefix your own Objective-C selectors, never reach private API through
+strings, and grep new SDK versions for the flagged names before you ship them.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3173,7 +3224,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
