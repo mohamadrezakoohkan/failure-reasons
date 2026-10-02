@@ -3311,6 +3311,52 @@ entitlements. Rename resources to plain ASCII.
 
 ---
 
+## [unsupported-architectures] Upload rejected: ITMS-90087 Unsupported Architectures
+
+**Symptom** — the archive builds, exports and runs on a device. The upload fails:
+
+```
+ERROR ITMS-90087: "Unsupported Architectures. The executable for
+  App.app/Frameworks/Vendor.framework contains unsupported architectures
+  '[x86_64, i386]'."
+```
+
+It often comes with ITMS-90209 (Invalid Segment Alignment) and ITMS-90125
+(LC_ENCRYPTION_INFO missing) for the same framework. All three have one cause.
+
+**Cause** — an embedded framework is a "fat" binary: device and simulator slices
+merged with `lipo`. The *Embed Frameworks* phase copies the binary as it is; it
+does not remove slices. The store accepts device slices only, so any
+`x86_64` or `i386` slice in the app is rejected. Usual sources:
+
+- an old vendor SDK shipped as a plain `.framework`, not an `.xcframework`;
+- a framework built with an old Carthage, or a custom "universal" script;
+- a strip step that used to run (Carthage `copy-frameworks`, a CocoaPods embed
+  script) was removed when the project changed tools.
+
+This is not [xcframework-create] (building the xcframework fails). Here a fat
+framework was never turned into one.
+
+**Fix**
+
+```bash
+# Which embedded binaries carry simulator slices?
+for f in Payload/App.app/Frameworks/*.framework; do
+  lipo -info "$f/$(basename "$f" .framework)"
+done | grep -E 'x86_64|i386'
+```
+
+Best: replace the fat framework with an `.xcframework` (ask the vendor, or
+build one per platform). Short term: in a run-script phase after *Embed
+Frameworks*, run `lipo -remove x86_64 -remove i386` on the binary, then sign it
+again with `$EXPANDED_CODE_SIGN_IDENTITY` — removing slices breaks the
+signature (see [modified-after-signing]).
+
+**Rule:** only device slices go into a store build. Run `lipo -info` on every
+embedded framework, and ship vendor code as `.xcframework`.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3320,7 +3366,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
