@@ -2871,6 +2871,52 @@ remove `2` from `TARGETED_DEVICE_FAMILY`. Then it runs as an iPhone app on iPad.
 
 ---
 
+## [swift-support-missing] Upload rejected: ITMS-90426 / 90424 Invalid Swift Support
+
+**Symptom** — the archive is fine and has a `SwiftSupport` folder. The `.ipa`
+you upload is refused:
+
+```
+ERROR ITMS-90426: "Invalid Swift Support. The SwiftSupport folder is missing.
+Rebuild your app using the current public (GM) version of Xcode and resubmit it."
+ERROR ITMS-90424: "Invalid Swift Support. The SwiftSupport folder is empty."
+```
+
+**Cause** — the app embeds Swift runtime dylibs (`libswift*.dylib` in
+`Frameworks/`). This happens with a deployment target below iOS 12.2, or with
+`ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES`. App Store Connect then wants a
+matching copy in a top-level `SwiftSupport/iphoneos/` folder of the `.ipa`.
+Only `xcodebuild -exportArchive` with `method` = `app-store-connect` writes
+that folder. It is lost when the `.ipa` is made another way:
+
+- zipping `Products/Applications/App.app` into `Payload/` by hand;
+- exporting `ad-hoc` or `enterprise` and uploading that file;
+- re-signing the `.ipa` with a script or a separate signing team.
+
+90424 is the same check when the folder exists but is empty, or no longer
+matches the re-signed dylibs.
+
+This is not [export-archive]. There, the export fails. Here, the export
+"worked", but the file was not made for the App Store.
+
+**Fix**
+
+```bash
+# Does the ipa have the folder, and does the app embed Swift dylibs?
+unzip -l App.ipa | grep -E "SwiftSupport/|Frameworks/libswift"
+```
+
+Export again from the `.xcarchive` with `method` = `app-store-connect`, and
+upload that `.ipa` without changing it. If signing happens elsewhere, hand
+over the `.xcarchive`, not an `.ipa`. If the deployment target is 12.2 or
+higher, set `ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = NO` on the app. Then no
+Swift dylibs are embedded, and the folder is not needed.
+
+**Rule:** the `.ipa` you upload must come straight from an App Store export —
+never zip it or re-sign it by hand.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2880,7 +2926,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
