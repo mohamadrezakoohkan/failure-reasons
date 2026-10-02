@@ -3405,6 +3405,50 @@ renewed or revoked, regenerate every profile that uses it the same day.
 
 ---
 
+## [beta-toolchain-upload] Upload rejected: ITMS-90111 Unsupported SDK or Xcode version
+
+**Symptom** — archive and export work, TestFlight even accepts the build, but
+App Store upload or review submission fails:
+
+```
+ITMS-90111: Unsupported SDK or Xcode version - App submissions must use the
+  latest Xcode and SDK Release Candidates (RC).
+```
+
+**Cause** — something in the build chain was a beta. App Store Connect reads
+the build stamps that Xcode writes into the app's `Info.plist`. A beta build
+number ends in a lowercase letter (`17A5241e`); GM/RC builds do not. Usual ways
+this happens:
+
+- the archive was made with a beta Xcode or beta SDK (the "try the new Xcode"
+  runner image, or `xcode-select` left pointing at `Xcode-beta.app`);
+- the Xcode is a release, but the **Mac** runs a beta macOS. `BuildMachineOSBuild`
+  carries that beta stamp, and Apple rejects it with the same code — changing
+  Xcode, SDK or deployment target does nothing;
+- rarely, the opposite: an Xcode so old that Apple no longer accepts it.
+
+This is not [sdk-too-old] (ITMS-90725, the SDK is below the minimum). Here the
+tools are too new — or not released yet.
+
+**Fix**
+
+```bash
+# Which tools stamped this build? A trailing lowercase letter means beta
+plutil -p App.xcarchive/Products/Applications/*.app/Info.plist \
+  | grep -E 'DTXcodeBuild|DTSDKBuild|DTPlatformBuild|BuildMachineOSBuild'
+# On the runner: is the OS or the selected Xcode a beta?
+sw_vers -buildVersion; xcodebuild -version
+```
+
+Archive again with a released Xcode on a released macOS — a second Mac, a
+stable CI image, or Xcode Cloud. Keep beta Xcode and beta macOS on separate
+runners that never run the release lane.
+
+**Rule:** release archives come only from GA Xcode on GA macOS. Check the
+`DT*` and `BuildMachineOSBuild` stamps before you upload.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3414,7 +3458,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
