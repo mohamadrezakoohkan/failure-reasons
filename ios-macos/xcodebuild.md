@@ -3594,6 +3594,62 @@ symbol" warning as an error: a color that is silently replaced is a UI bug.
 
 ---
 
+## [extension-version-mismatch] Upload flagged: ITMS-90473 extension version does not match the app
+
+**Symptom** — the archive builds, exports and uploads. Then App Store Connect
+sends an email, as a warning or as a rejection:
+
+```
+ITMS-90473: CFBundleShortVersionString Mismatch - The CFBundleShortVersionString
+  value '2.3.0' of extension 'Widget.appex' does not match the
+  CFBundleShortVersionString value '2.4.0' of its containing iOS application 'App.app'.
+ITMS-90473: CFBundleVersion Mismatch - The CFBundleVersion value '118' of
+  extension 'NotificationService.appex' does not match ... '121' ...
+```
+
+**Cause** — every `.appex` (widget, notification service, share, watch app)
+must carry the same `CFBundleShortVersionString` and `CFBundleVersion` as the
+app that embeds it. The values are valid, but they drifted apart:
+
+- the extension's Info.plist has a literal (`1.0`, `1`) instead of
+  `$(MARKETING_VERSION)` / `$(CURRENT_PROJECT_VERSION)`. So an archive-time
+  override (`CURRENT_PROJECT_VERSION=121`) reaches the app but not the extension;
+- `MARKETING_VERSION` is set at target level on the app only. The extension
+  falls back to the project value or the template's `1.0`;
+- a bump step (fastlane with a `target:`, a `sed`/PlistBuddy script, Tuist/
+  XcodeGen `settings` on one target) edits only the app target;
+- a new extension was added from the Xcode template after the last bump.
+
+This is not [version-string-format] (a value is not a valid number) and not
+[build-number-reused] (the number is already used). Here every number is valid
+on its own; they just don't match.
+
+**Fix**
+
+```bash
+# App and each extension, side by side — every line must be the same
+for f in Payload/App.app/Info.plist Payload/App.app/PlugIns/*.appex/Info.plist \
+         Payload/App.app/Watch/*.app/Info.plist; do
+  [ -f "$f" ] || continue
+  printf '%s  %s (%s)\n' \
+    "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$f")" \
+    "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$f")" "$f"
+done
+# Which targets hard-code a version, or set their own?
+grep -rnE '<string>[0-9]+(\.[0-9]+)*</string>' --include=Info.plist -B1 . | grep -A1 -E 'CFBundle(ShortVersionString|Version)<'
+grep -nE '(MARKETING_VERSION|CURRENT_PROJECT_VERSION) = ' App.xcodeproj/project.pbxproj | sort | uniq -c
+```
+
+Replace literals with `$(MARKETING_VERSION)` and `$(CURRENT_PROJECT_VERSION)`.
+Set those two once, at project level (or in a shared xcconfig), and delete the
+target-level copies. Then one bump, or one override on the `xcodebuild archive`
+line, sets the whole archive.
+
+**Rule:** the version lives in one place for the whole app. Every extension
+reads it from there; none has its own.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3603,7 +3659,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
