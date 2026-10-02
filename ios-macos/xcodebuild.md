@@ -3262,6 +3262,55 @@ built app with the loop above before you upload.
 
 ---
 
+## [modified-after-signing] Upload rejected: ITMS-90035 A sealed resource is missing or invalid
+
+**Symptom** — the archive builds and exports. The upload, or installing on a
+device, fails:
+
+```
+ERROR ITMS-90035: "Invalid Signature. A sealed resource is missing or invalid.
+  The file at path [App.app/App] is not properly signed."
+ERROR ITMS-90035: "Invalid Signature. Invalid Info.plist (plist or signature
+  have been modified)."
+```
+
+On a device it shows up as `0xe8008001` or "The code signature of the app is
+invalid".
+
+**Cause** — the signature seals a hash of every file in the bundle. If any file
+changes after signing, the seal breaks. Usual ways this happens:
+
+- a CI step edits the built `.app` or `.ipa` (PlistBuddy sets a version, a
+  config file is swapped, a framework is stripped), then zips it again without
+  signing it again;
+- a run-script phase changes an embedded framework after *Embed Frameworks*
+  has already signed it;
+- a resource name has a non-ASCII character (`Café.png`, an umlaut in the
+  product name). Zipping or copying can change its Unicode form, so the name
+  in the seal no longer matches the file.
+
+This is not [sdk-signature-missing] (a vendor SDK has no signature at all).
+Here a signature exists, but it does not match the files any more.
+
+**Fix**
+
+```bash
+# Which file breaks the seal? Run on the exported app
+codesign --verify --deep --strict --verbose=4 Payload/App.app
+# Names with non-ASCII characters
+find Payload/App.app | LC_ALL=C grep -n '[^ -~]'
+```
+
+Make every change before signing: set versions with build settings, pick
+configs per build configuration. If you must change the app after export,
+sign every changed bundle again, inside-out, with the same identity and
+entitlements. Rename resources to plain ASCII.
+
+**Rule:** nothing touches the bundle after it is signed. Run
+`codesign --verify --deep --strict` on the final `.ipa` before you upload.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3271,7 +3320,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
