@@ -3498,6 +3498,53 @@ target. Don't let a tools-version bump or a template default change it for you.
 
 ---
 
+## [testability-disabled] Tests fail to compile: Module 'X' was not compiled for testing
+
+**Symptom** — the app builds, but the test target stops at its first import:
+
+```
+error: module 'App' was not compiled for testing
+@testable import App
+```
+
+**Cause** — `@testable import` works only if the module was built with
+`-enable-testing`. Xcode adds that flag only when `ENABLE_TESTABILITY = YES`,
+and that is on only in Debug by default. Usual triggers:
+
+- the scheme's Test action uses `Release`, or a `Staging`/`Beta` config that was
+  copied from Release;
+- a Tuist/XcodeGen custom configuration is a release-type config, so it gets
+  release defaults;
+- `build-for-testing` ran with one `-configuration` and `test-without-building`
+  with another, or CI reused a Release build from the same DerivedData;
+- the module is a prebuilt binary (xcframework, binary SPM target). It was never
+  built for testing and can't be fixed from your side.
+
+This is not the `ENABLE_TESTABILITY` case in [undefined-symbols]. That one is
+a link error. This one is a compile error at the `import` line.
+
+**Fix**
+
+```bash
+# Which configuration does the Test action use?
+grep -o 'TestAction[^>]*buildConfiguration = "[^"]*"' *.xcodeproj/xcshareddata/xcschemes/*.xcscheme
+# Is testability on for that configuration?
+xcodebuild -showBuildSettings -scheme App -configuration Staging | grep ENABLE_TESTABILITY
+# Did the module really compile with it?
+grep -c -- '-enable-testing' build.log
+```
+
+Run tests in Debug. If tests must run against a release-like config, set
+`ENABLE_TESTABILITY = YES` only in a test-only config, never in the one you
+archive. It exports internal symbols and blocks some optimizations. For a
+binary module, drop `@testable` and test its public API. For SwiftPM, use
+`swift test -c release -Xswiftc -enable-testing`.
+
+**Rule:** decide the test configuration once, in the scheme. Build and run
+the tests with that same configuration.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3507,7 +3554,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
