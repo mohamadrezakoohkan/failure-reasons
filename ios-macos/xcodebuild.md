@@ -3650,6 +3650,55 @@ reads it from there; none has its own.
 
 ---
 
+## [automation-mode-timeout] UI tests never start: Timed out while enabling automation mode
+
+**Symptom** — unit tests pass. The UI test bundle waits about 90 seconds, then
+fails before the first test runs:
+
+```
+Testing failed:
+  The test runner failed to initialize for UI testing.
+  (Underlying Error: Timed out while enabling automation mode.)
+```
+
+It works when someone runs the tests at the Mac, and fails on CI or over SSH.
+
+**Cause** — since macOS 13, UI tests (and WebDriverAgent/Appium) must turn on
+Automation Mode first. Turning it on asks for an admin password or Touch ID. On
+a runner nobody can answer, so `testmanagerd` waits and gives up:
+
+- the job runs from SSH, `launchd` or a service user, with no logged-in GUI
+  session to show the prompt;
+- a fresh or re-imaged Mac never had automation allowed without a password;
+- a macOS update reset the setting;
+- the screen is locked or the Mac is asleep, so the prompt can't appear.
+
+This is not [test-hang] (tests run, then stall) and not [simulator-wedged] (the
+simulator itself won't boot). Here the runner never gets permission to drive
+the UI.
+
+**Fix**
+
+```bash
+# Current state: is a password needed?
+automationmodetool
+# Once per runner, as an admin: allow it without a password
+sudo automationmodetool enable-automationmode-without-authentication
+# Older macOS / helper tools: dev tools without a prompt
+sudo DevToolsSecurity -enable
+```
+
+Put the command in the runner's provisioning script, so a new image or a macOS
+update can't drop it. Run the agent in a logged-in GUI session (auto-login, a
+user LaunchAgent, not a LaunchDaemon), and turn off screen lock and sleep.
+Allowing automation without a password lets any local process drive the UI:
+do it on CI Macs only, never on a laptop.
+
+**Rule:** UI tests on CI need a GUI session and automation already allowed. Set
+both when the runner is built, not when the test fails.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3659,7 +3708,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
