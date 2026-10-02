@@ -3357,6 +3357,54 @@ embedded framework, and ship vendor code as `.xcframework`.
 
 ---
 
+## [profile-cert-mismatch] Provisioning profile doesn't include signing certificate
+
+**Symptom** — signing worked last week. Now archive or export fails:
+
+```
+error: Provisioning profile "App Store com.example.app" doesn't include
+  signing certificate "Apple Distribution: Example Ltd (ABCDE12345)".
+error: No signing certificate "iOS Distribution" found: No "iOS Distribution"
+  signing certificate matching team ID "ABCDE12345" with a private key was found.
+```
+
+**Cause** — a profile lists the exact certificates it trusts (by serial). The
+keychain has a certificate with the same *name* but a different serial, or no
+private key for it. Usual ways this happens:
+
+- someone created a new distribution certificate (the team limit is small, so
+  an old one was revoked), and the profile in the repo or on CI was not
+  regenerated;
+- the certificate expired and was renewed — same name, new serial;
+- CI imported the `.cer` only. Without the private key from the `.p12` the
+  identity does not exist for `codesign`.
+
+This is not [codesign-no-profile] (nothing installed) or
+[entitlements-mismatch] (the profile lacks a capability). Here both files are
+present, but they do not belong together.
+
+**Fix**
+
+```bash
+# Identities codesign can really use (certificate + private key)
+security find-identity -v -p codesigning
+# Which certificate does the profile trust, and until when?
+security cms -D -i App.mobileprovision \
+  | plutil -extract DeveloperCertificates.0 raw -o - - \
+  | base64 -D | openssl x509 -inform DER -noout -subject -enddate -fingerprint -sha1
+```
+
+The SHA-1 must match one line of `find-identity` (ignore the colons). If not,
+regenerate the profile for the current certificate (or let
+`-allowProvisioningUpdates` with an API key do it), and import the `.p12`, not
+the `.cer`. With match or a shared certs repo, update the repo once — not each
+runner.
+
+**Rule:** a profile and a certificate are a pair. When a certificate is
+renewed or revoked, regenerate every profile that uses it the same day.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3366,7 +3414,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
