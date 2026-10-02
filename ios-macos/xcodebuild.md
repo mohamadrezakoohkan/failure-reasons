@@ -2917,6 +2917,54 @@ never zip it or re-sign it by hand.
 
 ---
 
+## [metal-toolchain-missing] Xcode 26: cannot execute tool 'metal' — Metal Toolchain missing
+
+**Symptom** — the build stops at the first `.metal` file (`CompileMetalFile`).
+This can be your own shader, a Core Image kernel, or a file inside a package.
+SwiftUI previews of that target fail too:
+
+```
+error: cannot execute tool 'metal' due to missing Metal Toolchain;
+use: xcodebuild -downloadComponent MetalToolchain
+```
+
+**Cause** — since Xcode 26, the Metal compiler is no longer inside Xcode.app.
+It is a separate download (about 700 MB), like the platform runtimes in
+[missing-platform-runtime]. The usual triggers are:
+
+- a fresh Xcode on a laptop or CI image, where only the iOS platform was added;
+- a hosted runner (for example GitHub's `macos-26`) that does not include it;
+- a toolchain installed for an older Xcode or beta build that no longer matches
+  the selected Xcode (`xcode-select`).
+
+Nothing is wrong with your code. Projects with no `.metal` file never need the
+toolchain, which is why only some apps fail on the same machine.
+
+This is not [script-path-missing]. That is a run-script tool missing from PATH.
+Here, Xcode's own compiler step is missing a component it no longer ships.
+
+**Fix**
+
+```bash
+# Is the compiler there for the Xcode that is selected?
+xcode-select -p && xcrun -f metal && xcrun metal --version
+# Install it for that Xcode (run after any xcode-select switch)
+xcodebuild -downloadComponent MetalToolchain
+```
+
+On CI, add the download as a step before the build, after the Xcode is
+selected. To avoid downloading it on every run, export it once with
+`xcodebuild -downloadComponent MetalToolchain -exportPath <dir>`, cache that
+folder, and restore it with `xcodebuild -importComponent MetalToolchain
+-importPath <bundle>`. Key the cache on the Xcode build number, because a
+toolchain from another build is "missing" again. If it still fails after an
+upgrade from a beta, delete the old component and download it again.
+
+**Rule:** if the app has any `.metal` file, install the Metal Toolchain for the
+exact Xcode that builds it.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -2926,7 +2974,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
