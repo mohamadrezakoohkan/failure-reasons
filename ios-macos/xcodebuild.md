@@ -3545,6 +3545,55 @@ the tests with that same configuration.
 
 ---
 
+## [asset-symbol-collision] Generated asset symbols clash: Invalid redeclaration / Ambiguous use
+
+**Symptom** — the asset catalog compiles. Then Swift fails, often in a file
+you never wrote, or at a call site that worked before:
+
+```
+GeneratedAssetSymbols.swift: error: invalid redeclaration of 'brand'
+error: ambiguous use of 'brand'
+warning: The "Primary" color asset name resolves to a conflicting Color
+  symbol "primary". Try renaming the asset.
+```
+
+**Cause** — since Xcode 15, `actool` writes a Swift file with one symbol for
+each color and image: `ColorResource.brand`, `ImageResource.logo`, and, when
+`ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES`, also
+`Color.brand`, `UIColor.brand` and `UIImage.logo`. Those names collide with:
+
+- your own `extension Color { static let brand = … }`, or SwiftGen / R.swift
+  output that declares the same names;
+- built-in members. An asset named `Primary`, `Background` or `Red` maps to
+  `Color.primary` / `.red`. The symbol is skipped with a warning, and the
+  call site picks up the system color without telling you;
+- a `public` extension in another module with the same name. Both are visible
+  at the call site, so the use is ambiguous.
+
+It often shows up when an old project is opened in a newer Xcode, or the
+setting is turned on there. The asset catalog didn't change.
+
+**Fix**
+
+```bash
+# What did actool generate, and does it clash with your code?
+f=$(find ~/Library/Developer/Xcode/DerivedData -name GeneratedAssetSymbols.swift -path '*App*' | head -1)
+grep -oE 'static let [A-Za-z0-9_]+' "$f" | sort | uniq -d
+grep -rnE 'static (let|var) (brand|logo)\b' --include='*.swift' Sources/
+xcodebuild -showBuildSettings -scheme App | grep ASSETCATALOG_COMPILER_GENERATE
+```
+
+Choose one way to get typed assets. To keep Apple's: delete the hand-written
+or SwiftGen extensions and use `Color(.brand)` / `Image(.logo)`. To keep your
+own: set `ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO`.
+`ColorResource` stays, and it does not clash. Rename assets that match system
+names (`Primary` → `TextPrimary`).
+
+**Rule:** one source of asset symbols per module. Treat the "conflicting
+symbol" warning as an error: a color that is silently replaced is a UI bug.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3554,7 +3603,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
