@@ -3116,6 +3116,54 @@ re-wrap a vendor binary.
 
 ---
 
+## [stray-binary-in-bundle] Upload rejected: ITMS-90171 Invalid Bundle Structure
+
+**Symptom** — the archive builds and runs. Then the upload, or a later email, says:
+
+```
+ITMS-90171: Invalid Bundle Structure - The binary file 'App.app/libVendor.a'
+is not permitted. Your app can't contain standalone executables or libraries,
+other than a valid CFBundleExecutable of supported bundles.
+```
+
+The path in the message is the file to remove. It can also point inside a
+`.bundle` (`App.app/Vendor.bundle/Contents/MacOS/Vendor`).
+
+**Cause** — an iOS app may carry Mach-O code in only two kinds of place: the main
+executable, and the executable of a real bundle (`Frameworks/*.framework`,
+`PlugIns/*.appex`). Any other Mach-O file is rejected. Usual ways one gets in:
+
+- a `.a`, `.dylib`, CLI tool or `.dSYM` sits in *Copy Bundle Resources*, often
+  because it came in through a folder reference or a resources glob;
+- a vendor SDK ships a helper binary (`dump_syms`, an upload tool) inside its
+  `.bundle`, and the whole bundle is copied;
+- a resource `.bundle` target was built with the macOS SDK, so it has a
+  `Contents/MacOS` executable;
+- a loose `.dylib` is embedded instead of a `.framework`.
+
+Simulator and Debug builds never check this, so it only shows up at upload.
+
+This is not [nested-frameworks]. That one is a real framework in the wrong
+folder. Here, the file should not be in the app at all.
+
+**Fix**
+
+```bash
+# Every Mach-O file in the app that is not a bundle executable
+find Payload/App.app -type f -exec file {} + | grep Mach-O \
+  | grep -vE "App\.app/App:|\.framework/[^/]+:|\.appex/[^/]+:"
+```
+
+Remove the file from *Copy Bundle Resources* (or from the resources glob, or the
+pod's `resources`). For a vendor bundle, delete the helper in a run-script phase
+after the copy, or use a vendor release that leaves it out. For a `.bundle`
+target, set `SDKROOT = iphoneos`. Wrap a loose dylib in a framework.
+
+**Rule:** only bundle executables may be Mach-O. Run the `find` above on every
+archive before you upload.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -3125,7 +3173,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
