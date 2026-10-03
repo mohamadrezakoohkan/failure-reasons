@@ -4623,6 +4623,47 @@ grep -n 'SWIFT_OBJC_BRIDGING_HEADER' *.xcodeproj/project.pbxproj
 
 ---
 
+## [bundle-id-taken] Automatic signing fails: The app identifier cannot be registered to your development team
+
+**Symptom** — a fresh clone, a new team, or a renamed target, built with
+automatic signing (`-allowProvisioningUpdates`), stops at signing:
+
+```
+error: Failed to register bundle identifier. The app identifier "com.example.app" cannot be registered to your development team because it is not available. Change your bundle identifier to a unique string to try again.
+error: No profiles for 'com.example.app' were found
+```
+
+**Cause** — an App ID is unique across *all* Apple developer teams, not just
+yours. Automatic signing tries to register the bundle ID in the team set by
+`DEVELOPMENT_TEAM`; if any other team already owns it, Apple refuses. Most
+often that other team is your own: the company team owns the ID, but this
+machine signs with a Personal Team or a second team, or someone once
+registered it under their own account while trying the app out. The second
+error is only a follow-on — no profile can exist for an ID the team could not
+register.
+
+**Fix** — compare the team that signs with the team that owns the ID:
+
+```bash
+# Team and bundle ID the build signs with
+xcodebuild -showBuildSettings -scheme App 2>/dev/null | grep -E ' DEVELOPMENT_TEAM| PRODUCT_BUNDLE_IDENTIFIER| CODE_SIGN_STYLE'
+# Team prefixes that already have a profile for this ID on this Mac
+for f in ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/* ~/Library/MobileDevice/Provisioning\ Profiles/*; do
+  security cms -D -i "$f" 2>/dev/null | plutil -extract Entitlements.application-identifier raw -o - - 2>/dev/null
+done | grep com.example.app | sort -u
+```
+
+- Company ID: set `DEVELOPMENT_TEAM` to the team that owns it (the 10-char
+  prefix above) and make sure the signed-in account is a member of it.
+- Registered by mistake in a personal or old team: delete that App ID under
+  Certificates, Identifiers & Profiles in that account, then build again.
+- Local tinkering only: give the build its own ID (e.g. append `.$(USER)` in
+  a git-ignored `.xcconfig`), never the shared one.
+
+**Rule:** a bundle ID belongs to exactly one team worldwide — sign with that team, or pick a different ID.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -4632,7 +4673,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]; "PLA Update available" or "REQUIRED_AGREEMENTS_MISSING"? → [pla-not-accepted]; green tests but "Executed 0 tests"? → [only-testing-no-match]; "checksum of downloaded artifact of binary target"? → [binary-target-checksum]; device install says "0xe8008015"? → [device-not-in-profile]; green tests but "No profiles could be merged" or empty coverage? → [coverage-not-collected]; "CompileXCStrings" says "isn't in the correct format"? → [xcstrings-invalid]; `.m` file says "-Swift.h' file not found"? → [swift-header-not-found]; "___asan_init" undefined or "libclang_rt.asan" not loaded? → [sanitizer-runtime-missing]; "operation never finished bootstrapping" or "crashed with signal … before establishing connection"? → [test-bootstrap-crash]; "is linked as a static library by" two targets, or "Class … is implemented in both"? → [spm-static-linked-twice]; "Bundle' has no member 'module'" or "unable to find bundle named"? → [spm-resource-bundle]; "unable to spawn process" or "posix_spawn failed" with "Argument list too long"? → [argument-list-too-long]; "is unavailable in application extensions"? → [extension-unsafe-api]; device install says "does not match that of the installed application"? → [installed-app-id-mismatch]; "requires a development team" on a target in project 'Pods'? → [resource-bundle-signing]; "+CoreDataProperties.swift" used twice or "invalid redeclaration" of an entity? → [coredata-codegen-duplicate]; error under a `VerifyModule` step, "double-quoted include … expected angle-bracketed"? → [module-verifier]; "using bridging headers with framework targets" or "with module interfaces is unsupported"? → [bridging-header-unsupported]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]; "PLA Update available" or "REQUIRED_AGREEMENTS_MISSING"? → [pla-not-accepted]; green tests but "Executed 0 tests"? → [only-testing-no-match]; "checksum of downloaded artifact of binary target"? → [binary-target-checksum]; device install says "0xe8008015"? → [device-not-in-profile]; green tests but "No profiles could be merged" or empty coverage? → [coverage-not-collected]; "CompileXCStrings" says "isn't in the correct format"? → [xcstrings-invalid]; `.m` file says "-Swift.h' file not found"? → [swift-header-not-found]; "___asan_init" undefined or "libclang_rt.asan" not loaded? → [sanitizer-runtime-missing]; "operation never finished bootstrapping" or "crashed with signal … before establishing connection"? → [test-bootstrap-crash]; "is linked as a static library by" two targets, or "Class … is implemented in both"? → [spm-static-linked-twice]; "Bundle' has no member 'module'" or "unable to find bundle named"? → [spm-resource-bundle]; "unable to spawn process" or "posix_spawn failed" with "Argument list too long"? → [argument-list-too-long]; "is unavailable in application extensions"? → [extension-unsafe-api]; device install says "does not match that of the installed application"? → [installed-app-id-mismatch]; "requires a development team" on a target in project 'Pods'? → [resource-bundle-signing]; "+CoreDataProperties.swift" used twice or "invalid redeclaration" of an entity? → [coredata-codegen-duplicate]; error under a `VerifyModule` step, "double-quoted include … expected angle-bracketed"? → [module-verifier]; "using bridging headers with framework targets" or "with module interfaces is unsupported"? → [bridging-header-unsupported]; "cannot be registered to your development team because it is not available"? → [bundle-id-taken]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
