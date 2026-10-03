@@ -4240,6 +4240,62 @@ through a framework or make it dynamic.
 
 ---
 
+## [spm-resource-bundle] Package resources missing: Type 'Bundle' has no member 'module' / unable to find bundle named
+
+**Symptom** — the package target fails to compile, or compiles and then
+crashes the first time it loads an image, string or JSON file:
+
+```
+error: type 'Bundle' has no member 'module'
+warning: 'feature': found 2 file(s) which are unhandled; explicitly declare
+  them as resources or exclude from the target
+    /Sources/Feature/Resources/config.json
+Fatal error: unable to find bundle named MyPackage_Feature
+```
+
+**Cause** — SwiftPM only creates `Bundle.module` for a target that has
+resources. Xcode-type files (`.xcassets`, `.xib`, `.storyboard`, `.lproj`,
+`.xcstrings`) count by themselves. Anything else, like JSON, fonts or loose
+PNGs, has to be listed under `resources:`. If it is not, you get the "unhandled"
+warning, no bundle and no accessor. `Bundle.module` also does not exist in app
+or Xcode framework targets. It is a package-only symbol. When the target does
+compile, the resources go in a separate `<Package>_<Target>.bundle`. The
+accessor looks for it next to the main bundle, next to the binary that loaded
+it, and at an absolute DerivedData path baked in at build time. Tests and
+previews often only work because of that last path. The crash happens when the
+bundle never gets into the product: a prebuilt or static xcframework that ships
+without it, a command-line tool installed without it, or a framework copied out
+of the build directory. It works on the machine that built it and fails
+everywhere else.
+
+This is not [infoplist-missing] or [missing-input-file]. The build finds every
+file. SwiftPM was never told to package them, or the package went missing.
+
+**Fix** — declare the resources, then check the bundle ships with the product:
+
+```bash
+# What does SwiftPM treat as a resource? Empty means no Bundle.module
+swift package describe --type json | jq '.targets[] | {name, resources}'
+grep -i "unhandled" build.log
+# Was the bundle built, and is it in the shipped product?
+find "$BUILT_PRODUCTS_DIR" -maxdepth 1 -name '*_*.bundle'
+find "$APP" -name '*_*.bundle'
+```
+
+- Add `resources: [.process("Resources")]` to the target (or `.copy` to keep a
+  folder's layout). This needs `swift-tools-version` 5.3 or later.
+- Only use `Bundle.module` inside the package. To share it, expose
+  `public let featureBundle = Bundle.module`. Don't use it from app code.
+- Prebuilt binaries: a binary target can't carry a loose `.bundle`. Build the
+  package as a dynamic framework with its resources inside, or ship the bundle
+  and copy it into the app yourself.
+- CLI tools: install the `.bundle` next to the executable.
+
+**Rule:** a resource is only shipped if SwiftPM was told about it. Check for
+the `_<Target>.bundle` in the product, not in DerivedData.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -4249,7 +4305,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]; "PLA Update available" or "REQUIRED_AGREEMENTS_MISSING"? → [pla-not-accepted]; green tests but "Executed 0 tests"? → [only-testing-no-match]; "checksum of downloaded artifact of binary target"? → [binary-target-checksum]; device install says "0xe8008015"? → [device-not-in-profile]; green tests but "No profiles could be merged" or empty coverage? → [coverage-not-collected]; "CompileXCStrings" says "isn't in the correct format"? → [xcstrings-invalid]; `.m` file says "-Swift.h' file not found"? → [swift-header-not-found]; "___asan_init" undefined or "libclang_rt.asan" not loaded? → [sanitizer-runtime-missing]; "operation never finished bootstrapping" or "crashed with signal … before establishing connection"? → [test-bootstrap-crash]; "is linked as a static library by" two targets, or "Class … is implemented in both"? → [spm-static-linked-twice]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]; "PLA Update available" or "REQUIRED_AGREEMENTS_MISSING"? → [pla-not-accepted]; green tests but "Executed 0 tests"? → [only-testing-no-match]; "checksum of downloaded artifact of binary target"? → [binary-target-checksum]; device install says "0xe8008015"? → [device-not-in-profile]; green tests but "No profiles could be merged" or empty coverage? → [coverage-not-collected]; "CompileXCStrings" says "isn't in the correct format"? → [xcstrings-invalid]; `.m` file says "-Swift.h' file not found"? → [swift-header-not-found]; "___asan_init" undefined or "libclang_rt.asan" not loaded? → [sanitizer-runtime-missing]; "operation never finished bootstrapping" or "crashed with signal … before establishing connection"? → [test-bootstrap-crash]; "is linked as a static library by" two targets, or "Class … is implemented in both"? → [spm-static-linked-twice]; "Bundle' has no member 'module'" or "unable to find bundle named"? → [spm-resource-bundle]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
