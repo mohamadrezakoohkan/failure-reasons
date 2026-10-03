@@ -4085,6 +4085,56 @@ name, only from implementation files, and prove it with a clean build.
 
 ---
 
+## [sanitizer-runtime-missing] Sanitizer build fails: ___asan_init undefined / libclang_rt.asan dylib not loaded
+
+**Symptom** — with Address (or Thread / Undefined Behavior) Sanitizer in
+play, the link or the launch breaks, often only on CI or after a cache hit:
+
+```
+Undefined symbols for architecture arm64:
+  "___asan_init", referenced from: _asan.module_ctor in libCore.a(Cache.o)
+ld: symbol(s) not found for architecture arm64
+```
+
+or, at test launch:
+
+```
+dyld: Library not loaded: @rpath/libclang_rt.asan_iossim_dynamic.dylib
+  Referenced from: .../MyApp.app/MyApp
+```
+
+**Cause** — instrumented code needs the sanitizer runtime that ships inside
+the *selected* Xcode's clang, and Xcode only links and embeds it into the
+app when the sanitizer is on for *that* build. It breaks when the two
+halves disagree:
+
+- a prebuilt `.a` / `.xcframework` (vendored, or restored from a build
+  cache) was compiled with `-fsanitize=…`, but the app linking it was not;
+- `build-for-testing -enableAddressSanitizer YES` ran with one Xcode and
+  `test-without-building` with another, or the `.xctestrun` was moved
+  without the products — the runtime path baked in points nowhere;
+- the scheme turns ASan on for Run but the Test action does not reuse
+  Run's diagnostics (or the reverse), so targets build differently;
+- ASan and TSan are both requested — only one sanitizer can be on at a time.
+
+**Fix**
+
+```bash
+# Which binaries are instrumented? Any hit in a prebuilt lib is the culprit
+for f in $(find . -name '*.a' -o -name '*.framework' -prune -o -name '*.dylib'); do nm -m "$f" 2>/dev/null | grep -q '___asan_init\|___tsan_init' && echo "$f"; done
+# Is the runtime embedded in the built app, and from which Xcode?
+ls MyApp.app/Frameworks | grep clang_rt; xcode-select -p
+# Same flag on both steps, same Xcode on both machines
+xcodebuild build-for-testing -scheme App -enableAddressSanitizer YES
+xcodebuild test-without-building -xctestrun App.xctestrun -enableAddressSanitizer YES
+```
+
+Rebuild any cached or vendored library without `-fsanitize` (sanitize only
+your own code), keep sanitizers out of cache keys that Release builds share,
+and run ASan and TSan as separate jobs.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -4094,7 +4144,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]; "PLA Update available" or "REQUIRED_AGREEMENTS_MISSING"? → [pla-not-accepted]; green tests but "Executed 0 tests"? → [only-testing-no-match]; "checksum of downloaded artifact of binary target"? → [binary-target-checksum]; device install says "0xe8008015"? → [device-not-in-profile]; green tests but "No profiles could be merged" or empty coverage? → [coverage-not-collected]; "CompileXCStrings" says "isn't in the correct format"? → [xcstrings-invalid]; `.m` file says "-Swift.h' file not found"? → [swift-header-not-found]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]; "PLA Update available" or "REQUIRED_AGREEMENTS_MISSING"? → [pla-not-accepted]; green tests but "Executed 0 tests"? → [only-testing-no-match]; "checksum of downloaded artifact of binary target"? → [binary-target-checksum]; device install says "0xe8008015"? → [device-not-in-profile]; green tests but "No profiles could be merged" or empty coverage? → [coverage-not-collected]; "CompileXCStrings" says "isn't in the correct format"? → [xcstrings-invalid]; `.m` file says "-Swift.h' file not found"? → [swift-header-not-found]; "___asan_init" undefined or "libclang_rt.asan" not loaded? → [sanitizer-runtime-missing]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
