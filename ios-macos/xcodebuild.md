@@ -4347,6 +4347,55 @@ your command. Measure `-showBuildSettings` before blaming the script.
 
 ---
 
+## [extension-unsafe-api] Extension build fails: 'shared' is unavailable in application extensions for iOS
+
+**Symptom** — the app built fine until a widget, share or notification
+extension started using a shared module. Now that module fails to compile,
+often inside a package you did not change:
+
+```
+error: 'shared' is unavailable in application extensions for iOS: Use view controller based solutions where appropriate instead.
+error: 'sharedApplication' is unavailable: not available on iOS (App Extension)
+ld: warning: linking against a dylib which is not safe for use in application extensions: .../Analytics.framework/Analytics
+```
+
+**Cause** — extension targets build with `APPLICATION_EXTENSION_API_ONLY = YES`.
+With it on, the compiler hides every API marked unavailable for extensions:
+`UIApplication.shared`, `openURL`, background tasks and similar. The setting
+spreads: a framework or Swift package that an extension links is compiled
+the same way, so code that was fine in the app alone now breaks. A prebuilt
+framework without the flag is not an error, only the linker warning above,
+until it calls such an API at runtime from the extension.
+
+This is not [undefined-symbols]. The symbol exists. The compiler refuses it
+on purpose.
+
+**Fix** — find who calls what, then keep that code out of the extension:
+
+```bash
+# Which targets build extension-safe?
+xcodebuild -showBuildSettings -scheme App | grep -E '^\s*(TARGET_NAME|APPLICATION_EXTENSION_API_ONLY) '
+# The calls the compiler refuses
+grep -rnE 'UIApplication\.shared|sharedApplication' Sources Packages
+# Is a prebuilt framework marked extension-safe? (look for APP_EXTENSION_SAFE)
+otool -hv Analytics.framework/Analytics
+```
+
+- Mark the calling code `@available(iOSApplicationExtension, unavailable)`
+  (Objective-C: `NS_EXTENSION_UNAVAILABLE_IOS`). Then the module compiles,
+  and only the extension is stopped from calling that code.
+- Better: pass what the module needs (an `open(url:)` closure, a scene)
+  from the app instead of reaching for `UIApplication.shared` inside it.
+- Split the module: an extension-safe core, and an app-only part that the
+  extension does not link.
+- Do not hide the call with `value(forKey: "sharedApplication")`. It compiles,
+  then breaks at runtime and in review.
+
+**Rule:** anything an extension links must be extension-safe. Pass app-only
+things in from the app; don't reach for them from inside shared code.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -4356,7 +4405,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]; "PLA Update available" or "REQUIRED_AGREEMENTS_MISSING"? → [pla-not-accepted]; green tests but "Executed 0 tests"? → [only-testing-no-match]; "checksum of downloaded artifact of binary target"? → [binary-target-checksum]; device install says "0xe8008015"? → [device-not-in-profile]; green tests but "No profiles could be merged" or empty coverage? → [coverage-not-collected]; "CompileXCStrings" says "isn't in the correct format"? → [xcstrings-invalid]; `.m` file says "-Swift.h' file not found"? → [swift-header-not-found]; "___asan_init" undefined or "libclang_rt.asan" not loaded? → [sanitizer-runtime-missing]; "operation never finished bootstrapping" or "crashed with signal … before establishing connection"? → [test-bootstrap-crash]; "is linked as a static library by" two targets, or "Class … is implemented in both"? → [spm-static-linked-twice]; "Bundle' has no member 'module'" or "unable to find bundle named"? → [spm-resource-bundle]; "unable to spawn process" or "posix_spawn failed" with "Argument list too long"? → [argument-list-too-long]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]; "PLA Update available" or "REQUIRED_AGREEMENTS_MISSING"? → [pla-not-accepted]; green tests but "Executed 0 tests"? → [only-testing-no-match]; "checksum of downloaded artifact of binary target"? → [binary-target-checksum]; device install says "0xe8008015"? → [device-not-in-profile]; green tests but "No profiles could be merged" or empty coverage? → [coverage-not-collected]; "CompileXCStrings" says "isn't in the correct format"? → [xcstrings-invalid]; `.m` file says "-Swift.h' file not found"? → [swift-header-not-found]; "___asan_init" undefined or "libclang_rt.asan" not loaded? → [sanitizer-runtime-missing]; "operation never finished bootstrapping" or "crashed with signal … before establishing connection"? → [test-bootstrap-crash]; "is linked as a static library by" two targets, or "Class … is implemented in both"? → [spm-static-linked-twice]; "Bundle' has no member 'module'" or "unable to find bundle named"? → [spm-resource-bundle]; "unable to spawn process" or "posix_spawn failed" with "Argument list too long"? → [argument-list-too-long]; "is unavailable in application extensions"? → [extension-unsafe-api]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
