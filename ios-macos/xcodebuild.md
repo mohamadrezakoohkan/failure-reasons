@@ -4664,6 +4664,45 @@ done | grep com.example.app | sort -u
 
 ---
 
+## [ib-document-newer] Storyboard won't compile: The document requires Xcode NN.0 or later
+
+**Symptom** — CI (or a teammate on an older Xcode) fails in `CompileStoryboard`
+or `CompileXIB`, while the author's machine builds fine:
+
+```
+Main.storyboard: error: The document "Main.storyboard" requires Xcode 16.0 or later.
+This version does not support documents saved in the Xcode 16 format.
+```
+
+**Cause** — Interface Builder rewrites the XML header of every `.xib` /
+`.storyboard` it saves, not only the ones you meant to change. A newer Xcode
+bumps `toolsVersion` and adds `<capability ... minToolsVersion="16.0"/>`
+lines; `ibtool` from an older Xcode refuses anything whose `minToolsVersion` is
+above its own. One person just opening a file in a newer Xcode (or a beta) and
+committing it is enough.
+
+**Fix** — find the files that ask for more than the build machine has:
+
+```bash
+# Xcode on this machine
+xcodebuild -version | head -1
+# Highest minToolsVersion per IB file, highest first
+grep -ro 'minToolsVersion="[0-9.]*"' --include='*.xib' --include='*.storyboard' . | sort -t'"' -k2 -Vr | awk -F: '!seen[$1]++' | head
+# Which commit raised it?
+git log -p -S 'minToolsVersion="16.0"' -- '*.storyboard' '*.xib' | head -40
+```
+
+- Not on purpose (only header lines changed): `git checkout <old> -- File.xib`
+  and redo the real edit in the team's Xcode.
+- On purpose (the file uses a new IB feature): move CI and the team to that
+  Xcode first, then merge.
+- Prevent it: pin one Xcode for the team (`.xcode-version`, CI image), and
+  review IB diffs that touch only the `<document>` / `<capability>` lines.
+
+**Rule:** IB files are saved in the format of whoever last opened them — build them with an Xcode at least that new.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -4673,7 +4712,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]; "PLA Update available" or "REQUIRED_AGREEMENTS_MISSING"? → [pla-not-accepted]; green tests but "Executed 0 tests"? → [only-testing-no-match]; "checksum of downloaded artifact of binary target"? → [binary-target-checksum]; device install says "0xe8008015"? → [device-not-in-profile]; green tests but "No profiles could be merged" or empty coverage? → [coverage-not-collected]; "CompileXCStrings" says "isn't in the correct format"? → [xcstrings-invalid]; `.m` file says "-Swift.h' file not found"? → [swift-header-not-found]; "___asan_init" undefined or "libclang_rt.asan" not loaded? → [sanitizer-runtime-missing]; "operation never finished bootstrapping" or "crashed with signal … before establishing connection"? → [test-bootstrap-crash]; "is linked as a static library by" two targets, or "Class … is implemented in both"? → [spm-static-linked-twice]; "Bundle' has no member 'module'" or "unable to find bundle named"? → [spm-resource-bundle]; "unable to spawn process" or "posix_spawn failed" with "Argument list too long"? → [argument-list-too-long]; "is unavailable in application extensions"? → [extension-unsafe-api]; device install says "does not match that of the installed application"? → [installed-app-id-mismatch]; "requires a development team" on a target in project 'Pods'? → [resource-bundle-signing]; "+CoreDataProperties.swift" used twice or "invalid redeclaration" of an entity? → [coredata-codegen-duplicate]; error under a `VerifyModule` step, "double-quoted include … expected angle-bracketed"? → [module-verifier]; "using bridging headers with framework targets" or "with module interfaces is unsupported"? → [bridging-header-unsupported]; "cannot be registered to your development team because it is not available"? → [bundle-id-taken]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]; "PLA Update available" or "REQUIRED_AGREEMENTS_MISSING"? → [pla-not-accepted]; green tests but "Executed 0 tests"? → [only-testing-no-match]; "checksum of downloaded artifact of binary target"? → [binary-target-checksum]; device install says "0xe8008015"? → [device-not-in-profile]; green tests but "No profiles could be merged" or empty coverage? → [coverage-not-collected]; "CompileXCStrings" says "isn't in the correct format"? → [xcstrings-invalid]; `.m` file says "-Swift.h' file not found"? → [swift-header-not-found]; "___asan_init" undefined or "libclang_rt.asan" not loaded? → [sanitizer-runtime-missing]; "operation never finished bootstrapping" or "crashed with signal … before establishing connection"? → [test-bootstrap-crash]; "is linked as a static library by" two targets, or "Class … is implemented in both"? → [spm-static-linked-twice]; "Bundle' has no member 'module'" or "unable to find bundle named"? → [spm-resource-bundle]; "unable to spawn process" or "posix_spawn failed" with "Argument list too long"? → [argument-list-too-long]; "is unavailable in application extensions"? → [extension-unsafe-api]; device install says "does not match that of the installed application"? → [installed-app-id-mismatch]; "requires a development team" on a target in project 'Pods'? → [resource-bundle-signing]; "+CoreDataProperties.swift" used twice or "invalid redeclaration" of an entity? → [coredata-codegen-duplicate]; error under a `VerifyModule` step, "double-quoted include … expected angle-bracketed"? → [module-verifier]; "using bridging headers with framework targets" or "with module interfaces is unsupported"? → [bridging-header-unsupported]; "cannot be registered to your development team because it is not available"? → [bundle-id-taken]; storyboard or xib says "requires Xcode … or later"? → [ib-document-newer]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
