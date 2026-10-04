@@ -4914,6 +4914,54 @@ grep -rnE "TREAT_WARNINGS_AS_ERRORS|warnings-as-errors" fastlane/ ci/ .github/ *
 
 ---
 
+## [framework-arch-missing] Prebuilt framework lacks an arch: is missing one or more architectures required by this target
+
+**Symptom** — the build works when you run it from Xcode on one simulator or
+device, and fails on CI, in Release, or when you archive:
+
+```
+error: The linked framework 'Foo.framework' is missing one or more architectures required by this target: x86_64.
+error: The linked library 'libFoo.a' is missing one or more architectures required by this target: arm64.
+```
+
+**Cause** — the target builds more architectures than the binary has. Xcode
+checks this before linking. Common ways to get there:
+
+- A generic destination (`generic/platform=iOS Simulator`, or `platform=macOS`
+  for a universal Mac app) ignores `ONLY_ACTIVE_ARCH` and builds every arch in
+  `ARCHS`. Simulator `ARCHS` is `arm64 x86_64`, but the vendor's simulator
+  slice is arm64 only.
+- A dependency (a pod, or a Carthage framework) was built with
+  `ONLY_ACTIVE_ARCH=YES`, so it has one arch. The app builds with `NO`, as
+  Release and archives do.
+- A target sets `ARCHS` by hand (for example `ARCHS = arm64`), and another
+  target uses `$(ARCHS_STANDARD)`.
+
+This is not [simulator-arch]. There, the binary has the right arch for the
+wrong platform. Here, the platform is right, but an arch is missing.
+
+**Fix** — compare what the binary has with what the target builds:
+
+```bash
+# Archs in the prebuilt binary (for an xcframework, check each slice)
+lipo -archs path/to/Foo.framework/Foo
+# Archs the target builds for this destination
+xcodebuild -scheme App -destination 'generic/platform=iOS Simulator' \
+  -showBuildSettings | grep -E "^ *(ARCHS|ONLY_ACTIVE_ARCH|EXCLUDED_ARCHS) ="
+```
+
+- For simulator CI, use a concrete destination
+  (`-destination 'platform=iOS Simulator,name=iPhone 16'`), so only the
+  active arch is built.
+- Use the same `ONLY_ACTIVE_ARCH` for each configuration in all targets. For
+  CocoaPods, set it in `post_install` to match the app.
+- Ask the vendor for an `.xcframework` with every slice you ship. Use
+  `EXCLUDED_ARCHS` only as a stopgap, for an arch you really do not ship.
+
+**Rule:** a prebuilt binary must contain every arch your widest build asks for — check with `lipo -archs` before blaming the linker.
+
+---
+
 ## Fast triage
 
 Work down this list before deep-diving a log:
@@ -4923,7 +4971,7 @@ Work down this list before deep-diving a log:
 3. `xcodebuild -showdestinations` — destination actually exists? → [no-matching-destination]
 4. `df -h` — disk not full? → [disk-space]; `ulimit -n` only 256? → [too-many-open-files]
 5. Wipe DerivedData, retry once. → [stale-derived-data]; "does not match previously recorded value"? → [spm-fingerprint-mismatch]; space in `pwd`? → [path-with-spaces]; binaries are "ASCII text"? → [lfs-pointer]
-6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]; "PLA Update available" or "REQUIRED_AGREEMENTS_MISSING"? → [pla-not-accepted]; green tests but "Executed 0 tests"? → [only-testing-no-match]; "checksum of downloaded artifact of binary target"? → [binary-target-checksum]; device install says "0xe8008015"? → [device-not-in-profile]; green tests but "No profiles could be merged" or empty coverage? → [coverage-not-collected]; "CompileXCStrings" says "isn't in the correct format"? → [xcstrings-invalid]; `.m` file says "-Swift.h' file not found"? → [swift-header-not-found]; "___asan_init" undefined or "libclang_rt.asan" not loaded? → [sanitizer-runtime-missing]; "operation never finished bootstrapping" or "crashed with signal … before establishing connection"? → [test-bootstrap-crash]; "is linked as a static library by" two targets, or "Class … is implemented in both"? → [spm-static-linked-twice]; "Bundle' has no member 'module'" or "unable to find bundle named"? → [spm-resource-bundle]; "unable to spawn process" or "posix_spawn failed" with "Argument list too long"? → [argument-list-too-long]; "is unavailable in application extensions"? → [extension-unsafe-api]; device install says "does not match that of the installed application"? → [installed-app-id-mismatch]; "requires a development team" on a target in project 'Pods'? → [resource-bundle-signing]; "+CoreDataProperties.swift" used twice or "invalid redeclaration" of an entity? → [coredata-codegen-duplicate]; error under a `VerifyModule` step, "double-quoted include … expected angle-bracketed"? → [module-verifier]; "using bridging headers with framework targets" or "with module interfaces is unsupported"? → [bridging-header-unsupported]; "cannot be registered to your development team because it is not available"? → [bundle-id-taken]; storyboard or xib says "requires Xcode … or later"? → [ib-document-newer]; "Could not find or use auto-linked library 'swiftCompatibility…'" or "__swift_FORCE_LOAD_$_swift…" undefined? → [swift-runtime-not-linked]; "has conflicting provisioning settings" or "does not support provisioning profiles"? → [cli-signing-override]; "DT_TOOLCHAIN_DIR cannot be used to evaluate"? → [dt-toolchain-dir]; archive fails in "[CP] Embed Pods Frameworks" with "rsync: link_stat … failed" or "code 23"? → [pods-embed-readlink]; "conflicting options '-warnings-as-errors' and '-suppress-warnings'"? → [warning-flags-conflict]
+6. Still failing? `grep -nE "error:" build.log | head -30` and read the *first* error. Green CI but `BUILD FAILED` in the log? → [pipe-masks-exit]; tests green but the report step says "--legacy flag is required"? → [xcresulttool-legacy]; upload says "Redundant Binary Upload"? → [build-number-reused]; upload says "ITMS-90725"? → [sdk-too-old]; notarytool says "Invalid"? → [notarization-invalid]; email says "ITMS-90683"? → [purpose-string-missing]; upload says "ITMS-90205" or "90206"? → [nested-frameworks]; upload says "ITMS-90713", "90022" or "90717"? → [app-icon-missing]; upload says "ITMS-90208", "90530" or "90360" on a framework? → [framework-min-os]; importing a shipped framework says "is not a member type of"? → [interface-type-shadows-module]; importing a framework says "Missing required module"? → [missing-required-module]; upload says "ITMS-90474" or "90475"? → [ipad-orientations]; upload says "ITMS-90426" or "90424"? → [swift-support-missing]; "cannot execute tool 'metal'"? → [metal-toolchain-missing]; upload says "ITMS-90685"? → [bundle-id-collision]; helper target says "No such module 'XCTest'"? → [testing-search-paths]; upload says "ITMS-91065"? → [sdk-signature-missing]; upload says "ITMS-90171"? → [stray-binary-in-bundle]; email says "ITMS-90338"? → [non-public-api]; upload says "ITMS-90060" or "90058"? → [version-string-format]; upload says "ITMS-90035"? → [modified-after-signing]; upload says "ITMS-90087"? → [unsupported-architectures]; "doesn't include signing certificate"? → [profile-cert-mismatch]; upload says "ITMS-90111"? → [beta-toolchain-upload]; "risks causing data races" or "is not concurrency-safe" as errors? → [swift6-language-mode]; "was not compiled for testing"? → [testability-disabled]; "invalid redeclaration" in `GeneratedAssetSymbols.swift`? → [asset-symbol-collision]; email says "ITMS-90473"? → [extension-version-mismatch]; UI tests say "Timed out while enabling automation mode"? → [automation-mode-timeout]; export says "Cloud signing permission error"? → [cloud-signing-permission]; "PLA Update available" or "REQUIRED_AGREEMENTS_MISSING"? → [pla-not-accepted]; green tests but "Executed 0 tests"? → [only-testing-no-match]; "checksum of downloaded artifact of binary target"? → [binary-target-checksum]; device install says "0xe8008015"? → [device-not-in-profile]; green tests but "No profiles could be merged" or empty coverage? → [coverage-not-collected]; "CompileXCStrings" says "isn't in the correct format"? → [xcstrings-invalid]; `.m` file says "-Swift.h' file not found"? → [swift-header-not-found]; "___asan_init" undefined or "libclang_rt.asan" not loaded? → [sanitizer-runtime-missing]; "operation never finished bootstrapping" or "crashed with signal … before establishing connection"? → [test-bootstrap-crash]; "is linked as a static library by" two targets, or "Class … is implemented in both"? → [spm-static-linked-twice]; "Bundle' has no member 'module'" or "unable to find bundle named"? → [spm-resource-bundle]; "unable to spawn process" or "posix_spawn failed" with "Argument list too long"? → [argument-list-too-long]; "is unavailable in application extensions"? → [extension-unsafe-api]; device install says "does not match that of the installed application"? → [installed-app-id-mismatch]; "requires a development team" on a target in project 'Pods'? → [resource-bundle-signing]; "+CoreDataProperties.swift" used twice or "invalid redeclaration" of an entity? → [coredata-codegen-duplicate]; error under a `VerifyModule` step, "double-quoted include … expected angle-bracketed"? → [module-verifier]; "using bridging headers with framework targets" or "with module interfaces is unsupported"? → [bridging-header-unsupported]; "cannot be registered to your development team because it is not available"? → [bundle-id-taken]; storyboard or xib says "requires Xcode … or later"? → [ib-document-newer]; "Could not find or use auto-linked library 'swiftCompatibility…'" or "__swift_FORCE_LOAD_$_swift…" undefined? → [swift-runtime-not-linked]; "has conflicting provisioning settings" or "does not support provisioning profiles"? → [cli-signing-override]; "DT_TOOLCHAIN_DIR cannot be used to evaluate"? → [dt-toolchain-dir]; archive fails in "[CP] Embed Pods Frameworks" with "rsync: link_stat … failed" or "code 23"? → [pods-embed-readlink]; "conflicting options '-warnings-as-errors' and '-suppress-warnings'"? → [warning-flags-conflict]; "is missing one or more architectures required by this target"? → [framework-arch-missing]
 
 If steps 1–5 change the outcome, it was the environment. If they do not, it is
 the code — and only then is the diff worth reading.
